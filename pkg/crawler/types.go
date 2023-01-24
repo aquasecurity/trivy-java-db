@@ -1,4 +1,4 @@
-package collector
+package crawler
 
 type Metadata struct {
 	GroupID    string     `xml:"groupId"`
@@ -9,10 +9,6 @@ type Metadata struct {
 type Versioning struct {
 	//Latest      string   `xml:"latest"`
 	//Release     string   `xml:"release"`
-	Versions    Versions `xml:"versions"`
+	Versions    []string `xml:"versions>version"`
 	LastUpdated string   `xml:"lastUpdated"`
-}
-
-type Versions struct {
-	Version []string `xml:"version"`
 }
