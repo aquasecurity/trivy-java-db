@@ -6,7 +6,7 @@ import (
 )
 
 func main() {
-	db.Init("/home/dmitriy/.cache/trivy")
+	db.Init("/home/dmitriy/.cache/trivy-java")
 	collector.CollectProjects()
 
 }

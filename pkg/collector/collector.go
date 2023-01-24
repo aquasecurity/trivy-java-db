@@ -8,6 +8,7 @@ import (
 	"log"
 	"net/http"
 	"strings"
+	"sync"
 
 	"golang.org/x/sync/semaphore"
 	"golang.org/x/xerrors"
@@ -25,7 +26,8 @@ func CollectProjects() error {
 
 func parseMainURL() error {
 	ctx := context.TODO()
-	limit := semaphore.NewWeighted(100)
+	limit := semaphore.NewWeighted(200)
+	wg := sync.WaitGroup{}
 
 	resp, err := http.Get(mavenRepoURL)
 	if err != nil {
@@ -45,7 +47,9 @@ func parseMainURL() error {
 				log.Printf("Failed to acquire semaphore: %v", err)
 				return
 			}
+			wg.Add(1)
 			go func() {
+				defer wg.Done()
 				defer limit.Release(1)
 				err := parseURL(mavenRepoURL + link)
 				if err != nil {
@@ -55,6 +59,7 @@ func parseMainURL() error {
 		}
 
 	})
+	wg.Wait()
 	return nil
 }
 
