@@ -8,7 +8,6 @@ import (
 	_ "modernc.org/sqlite"
 	"os"
 	"path/filepath"
-	"sync"
 )
 
 const dbFileName = "trivy-java.db"
@@ -16,7 +15,6 @@ const dbFileName = "trivy-java.db"
 var (
 	db    *gorm.DB
 	dbDir string
-	m     sync.Mutex
 )
 
 func Init(cacheDir string) error {
@@ -27,7 +25,9 @@ func Init(cacheDir string) error {
 	}
 	//open db
 	var err error
-	db, err = gorm.Open(sqlite.Open(dbPath), &gorm.Config{})
+	db, err = gorm.Open(sqlite.Open(dbPath), &gorm.Config{
+		// Logger: logger.Default.LogMode(logger.Silent), // TODO disable logger????
+	})
 	if err != nil {
 		return xerrors.Errorf("can't open db: %w", err)
 	}
@@ -36,12 +36,7 @@ func Init(cacheDir string) error {
 	if err != nil {
 		return xerrors.Errorf("can't run auto migration for db: %w", err)
 	}
-	m = sync.Mutex{}
 	return nil
-}
-
-func InsertIndex(indexes []*types.Index) {
-	db.Create(indexes)
 }
 
 func Dir(cacheDir string) string {
@@ -51,4 +46,30 @@ func Dir(cacheDir string) string {
 func Path(cacheDir string) string {
 	dbPath := filepath.Join(Dir(cacheDir), dbFileName)
 	return dbPath
+}
+
+//////////////////////////////////////
+// functions to interaction with DB //
+//////////////////////////////////////
+
+func InsertIndex(indexes []*types.Index) {
+	db.Create(indexes)
+}
+
+func SelectIndexBySha1(sha1 string) types.Index {
+	index := types.Index{}
+	db.Where(&types.Index{Sha1: sha1}).First(&index)
+	return index
+}
+
+func SelectIndexByArtifactIDAndGroupID(artifactID, groupID string) types.Index {
+	index := types.Index{}
+	db.Where(&types.Index{ArtifactID: artifactID, GroupID: groupID}).First(&index)
+	return index
+}
+
+func SelectIndexesByArtifactIDAndJarType(artifactID, fileType string) []types.Index {
+	var indexes []types.Index
+	db.Where(&types.Index{ArtifactID: artifactID, Type: fileType}).Find(&indexes)
+	return indexes
 }
