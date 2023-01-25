@@ -1,9 +1,10 @@
 package db
 
 import (
-	"database/sql"
 	"github.com/aquasecurity/trivy-java-db/pkg/types"
 	"golang.org/x/xerrors"
+	"gorm.io/driver/sqlite"
+	"gorm.io/gorm"
 	_ "modernc.org/sqlite"
 	"os"
 	"path/filepath"
@@ -13,7 +14,7 @@ import (
 const dbFileName = "trivy-java.db"
 
 var (
-	db    *sql.DB
+	db    *gorm.DB
 	dbDir string
 	m     sync.Mutex
 )
@@ -26,37 +27,21 @@ func Init(cacheDir string) error {
 	}
 	//open db
 	var err error
-	db, err = sql.Open("sqlite", dbPath)
+	db, err = gorm.Open(sqlite.Open(dbPath), &gorm.Config{})
 	if err != nil {
-		return err
+		return xerrors.Errorf("can't open db: %w", err)
 	}
 
-	err = createIndexesTable()
+	err = db.AutoMigrate(types.Index{})
 	if err != nil {
-		return err
+		return xerrors.Errorf("can't run auto migration for db: %w", err)
 	}
 	m = sync.Mutex{}
 	return nil
 }
 
-func InsertIndex(groupID, artifactID, version, sha1 string) error {
-	m.Lock()
-	_, err := db.Exec("insert into indexes values ($1, $2, $3, $4)", groupID, artifactID, version, sha1)
-	if err != nil {
-		return err
-	}
-	m.Unlock()
-	return nil
-}
-
-func SelectGAVbySha1(sha1 string) (types.GAV, error) {
-	var groupID, artifactID, version string
-	row := db.QueryRow("select GroupID, ArtifactID, Version from indexes WHERE Sha1=$1", sha1)
-	err := row.Scan(&groupID, &artifactID, &version)
-	if err != nil {
-		return types.GAV{}, err // TODO add error
-	}
-	return types.GAV{groupID, artifactID, version}, nil
+func InsertIndex(indexes []*types.Index) {
+	db.Create(indexes)
 }
 
 func Dir(cacheDir string) string {
@@ -66,12 +51,4 @@ func Dir(cacheDir string) string {
 func Path(cacheDir string) string {
 	dbPath := filepath.Join(Dir(cacheDir), dbFileName)
 	return dbPath
-}
-
-func createIndexesTable() error {
-	_, err := db.Exec(`drop table if exists indexes;create table indexes(GroupID String, ArtifactID String, Version String, Sha1 String);`)
-	if err != nil {
-		return err
-	}
-	return nil
 }

@@ -4,14 +4,16 @@ import (
 	"context"
 	"encoding/xml"
 	"fmt"
+	"github.com/aquasecurity/trivy-java-db/pkg/db"
+	"github.com/aquasecurity/trivy-java-db/pkg/types"
 	"io"
 	"log"
 	"net/http"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/PuerkitoBio/goquery"
-	"github.com/aquasecurity/trivy-java-db/pkg/db"
 	"github.com/hashicorp/go-retryablehttp"
 	"golang.org/x/sync/semaphore"
 	"golang.org/x/xerrors"
@@ -20,10 +22,12 @@ import (
 const mavenRepoURL = "https://repo.maven.apache.org/maven2/"
 
 type Crawler struct {
-	wg     sync.WaitGroup
-	urlCh  chan string
-	limit  *semaphore.Weighted
-	client *retryablehttp.Client
+	wg             sync.WaitGroup
+	urlCh          chan string
+	indexCh        chan *types.Index
+	tickerDuration time.Duration
+	limit          *semaphore.Weighted
+	client         *retryablehttp.Client
 }
 
 type Option struct {
@@ -34,9 +38,11 @@ func NewCrawler(opt Option) Crawler {
 	client := retryablehttp.NewClient()
 	client.Logger = nil
 	return Crawler{
-		urlCh:  make(chan string, opt.Limit*10),
-		limit:  semaphore.NewWeighted(opt.Limit),
-		client: client,
+		urlCh:          make(chan string, opt.Limit*10),
+		indexCh:        make(chan *types.Index, opt.Limit),
+		tickerDuration: 500 * time.Millisecond,
+		limit:          semaphore.NewWeighted(opt.Limit),
+		client:         client,
 	}
 }
 
@@ -50,7 +56,26 @@ func (c *Crawler) Crawl(ctx context.Context) error {
 
 	go func() {
 		c.wg.Wait()
+		time.Sleep(2 * c.tickerDuration) // required to store the last Index array in the DB
+		close(c.indexCh)
 		close(c.urlCh)
+	}()
+
+	go func() { // function for saving indexes in the database
+		ticker := time.NewTicker(c.tickerDuration)
+		defer ticker.Stop()
+		var indexes []*types.Index
+		for {
+			select {
+			case <-ticker.C: // save all indexes taken every c.tickerDuration
+				if len(indexes) > 0 {
+					db.InsertIndex(indexes)
+					indexes = []*types.Index{} // clear array after saving to db
+				}
+			case index := <-c.indexCh: // get index from chanel and save to array
+				indexes = append(indexes, index)
+			}
+		}
 	}()
 
 	var count int
@@ -80,6 +105,7 @@ loop:
 			close(c.urlCh)
 			return err
 		}
+
 	}
 
 	return nil
@@ -145,9 +171,8 @@ func (c *Crawler) crawlSHA1(baseURL string, meta *Metadata) error {
 			return err
 		}
 		if sha1 != "" {
-			if err = db.InsertIndex(meta.GroupID, meta.ArtifactID, version, sha1); err != nil {
-				return err
-			}
+			index := &types.Index{GroupID: meta.GroupID, ArtifactID: meta.ArtifactID, Version: version, Sha1: sha1, Type: types.JarType}
+			c.indexCh <- index
 		}
 	}
 	return nil
