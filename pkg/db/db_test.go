@@ -21,7 +21,7 @@ func initDB() error {
 	if err != nil {
 		return err
 	}
-	InsertIndex([]*types.Index{&indexJstl, &indexJavaxServlet})
+	InsertIndexes([]*types.Index{&indexJstl, &indexJavaxServlet})
 	return nil
 }
 

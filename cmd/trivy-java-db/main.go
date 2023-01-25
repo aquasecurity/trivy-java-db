@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"github.com/aquasecurity/trivy-java-db/metadata"
 	"log"
 	"os"
 	"path/filepath"
@@ -24,9 +25,12 @@ func run() error {
 		return err
 	}
 
-	if err = db.Init(filepath.Join(cacheDir, "trivy-java-db")); err != nil {
+	dbDir := filepath.Join(cacheDir, "trivy-java-db")
+
+	if err = db.Init(dbDir); err != nil {
 		return xerrors.Errorf("db init error: %w", err)
 	}
+	metadata.Init(dbDir)
 
 	ctx := context.Background()
 	c := crawler.NewCrawler(crawler.Option{

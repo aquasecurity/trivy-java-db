@@ -10,6 +10,7 @@ require (
 	golang.org/x/xerrors v0.0.0-20220907171357-04be3eba64a2
 	gorm.io/driver/sqlite v1.4.4
 	gorm.io/gorm v1.24.3
+	k8s.io/utils v0.0.0-20230115233650-391b47cb4029
 	modernc.org/sqlite v1.20.3
 )
 

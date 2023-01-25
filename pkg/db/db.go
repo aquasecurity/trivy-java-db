@@ -8,9 +8,14 @@ import (
 	_ "modernc.org/sqlite"
 	"os"
 	"path/filepath"
+	"time"
 )
 
-const dbFileName = "trivy-java.db"
+const (
+	dbFileName     = "trivy-java.db"
+	SchemaVersion  = 1
+	UpdateInterval = time.Hour * 168 // 1 week
+)
 
 var (
 	db    *gorm.DB
@@ -52,7 +57,7 @@ func Path(cacheDir string) string {
 // functions to interaction with DB //
 //////////////////////////////////////
 
-func InsertIndex(indexes []*types.Index) {
+func InsertIndexes(indexes []*types.Index) {
 	db.Create(indexes)
 }
 

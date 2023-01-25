@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/xml"
 	"fmt"
+	"github.com/aquasecurity/trivy-java-db/metadata"
 	"github.com/aquasecurity/trivy-java-db/pkg/db"
 	"github.com/aquasecurity/trivy-java-db/pkg/types"
 	"io"
@@ -17,6 +18,7 @@ import (
 	"github.com/hashicorp/go-retryablehttp"
 	"golang.org/x/sync/semaphore"
 	"golang.org/x/xerrors"
+	"k8s.io/utils/clock"
 )
 
 const mavenRepoURL = "https://repo.maven.apache.org/maven2/"
@@ -25,9 +27,11 @@ type Crawler struct {
 	wg             sync.WaitGroup
 	urlCh          chan string
 	indexCh        chan *types.Index
+	saveIndexesWG  sync.WaitGroup
 	tickerDuration time.Duration
 	limit          *semaphore.Weighted
 	client         *retryablehttp.Client
+	clock          clock.Clock
 }
 
 type Option struct {
@@ -43,6 +47,7 @@ func NewCrawler(opt Option) Crawler {
 		tickerDuration: 500 * time.Millisecond,
 		limit:          semaphore.NewWeighted(opt.Limit),
 		client:         client,
+		clock:          clock.RealClock{},
 	}
 }
 
@@ -56,12 +61,14 @@ func (c *Crawler) Crawl(ctx context.Context) error {
 
 	go func() {
 		c.wg.Wait()
-		time.Sleep(2 * c.tickerDuration) // required to store the last Index array in the DB
 		close(c.indexCh)
 		close(c.urlCh)
+		c.saveIndexesWG.Wait()
 	}()
 
 	go func() { // function for saving indexes in the database
+		c.saveIndexesWG.Add(1)
+		defer c.saveIndexesWG.Done()
 		ticker := time.NewTicker(c.tickerDuration)
 		defer ticker.Stop()
 		var indexes []*types.Index
@@ -69,10 +76,13 @@ func (c *Crawler) Crawl(ctx context.Context) error {
 			select {
 			case <-ticker.C: // save all indexes taken every c.tickerDuration
 				if len(indexes) > 0 {
-					db.InsertIndex(indexes)
+					db.InsertIndexes(indexes)
 					indexes = []*types.Index{} // clear array after saving to db
 				}
-			case index := <-c.indexCh: // get index from chanel and save to array
+			case index, ok := <-c.indexCh: // get index from chanel and save to array
+				if !ok {
+					return
+				}
 				indexes = append(indexes, index)
 			}
 		}
@@ -87,8 +97,19 @@ loop:
 			if count%1000 == 0 {
 				log.Printf("Count: %d", count)
 			}
-			if !ok {
-				// channel is closed
+			if !ok { // channel is closed
+				// save metadata
+				metaDB := metadata.Metadata{
+					Version:    db.SchemaVersion,
+					NextUpdate: c.clock.Now().UTC().Add(db.UpdateInterval),
+					UpdatedAt:  c.clock.Now().UTC(),
+				}
+				err := metadata.Update(metaDB)
+				if err != nil {
+					close(c.urlCh)
+					close(c.indexCh)
+					return err
+				}
 				break loop
 			}
 			if err := c.limit.Acquire(ctx, 1); err != nil {
@@ -103,6 +124,7 @@ loop:
 			}()
 		case err := <-errCh:
 			close(c.urlCh)
+			close(c.indexCh)
 			return err
 		}
 
@@ -185,13 +207,13 @@ func (c *Crawler) parseMetadata(url string) (*Metadata, error) {
 	}
 	defer resp.Body.Close()
 
-	var metadata Metadata
-	if err = xml.NewDecoder(resp.Body).Decode(&metadata); err != nil {
+	var meta Metadata
+	if err = xml.NewDecoder(resp.Body).Decode(&meta); err != nil {
 		return nil, xerrors.Errorf("%s decode error: %w", url, err)
 	}
 	// we don't need metadata.xml files from version folder
 	// e.g. https://repo.maven.apache.org/maven2/HTTPClient/HTTPClient/0.3-3/maven-metadata.xml
-	if len(metadata.Versioning.Versions) == 0 {
+	if len(meta.Versioning.Versions) == 0 {
 		return nil, nil
 	}
 	// also we need to skip metadata.xml files from groupID folder
@@ -199,7 +221,7 @@ func (c *Crawler) parseMetadata(url string) (*Metadata, error) {
 	if len(strings.Split(url, "/")) < 7 {
 		return nil, nil
 	}
-	return &metadata, nil
+	return &meta, nil
 }
 
 func (c *Crawler) fetchSHA1(url string) (string, error) {
