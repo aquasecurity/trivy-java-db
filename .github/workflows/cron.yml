@@ -6,7 +6,6 @@ on:
   workflow_dispatch:
 env:
   GH_USER: aqua-bot
-  VERSION: 1
   TRIVY_JAVA_DB_CACHE: cache
 jobs:
   build:
@@ -49,9 +48,6 @@ jobs:
       - name: Upload assets to GHCR
         run: |
           ./oras version
-          tags=(latest ${{ env.VERSION }})
-          for tag in ${tags[@]}; do
-            ./oras push ghcr.io/${{ github.repository }}:${tag} \
-              --manifest-config /dev/null:application/vnd.aquasec.trivy.config.v1+json \
-              db.tar.gz:application/vnd.aquasec.trivy.java.db.layer.v1.tar+gzip
-          done
+          ./oras push ghcr.io/${{ github.repository }}:latest \
+          --manifest-config /dev/null:application/vnd.aquasec.trivy.config.v1+json \
+          db.tar.gz:application/vnd.aquasec.trivy.java.db.layer.v1.tar+gzip -d
