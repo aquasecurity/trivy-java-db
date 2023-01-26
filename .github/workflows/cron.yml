@@ -1,5 +1,5 @@
 ---
-name: Trivy DB
+name: Trivy Java DB
 on:
   schedule:
     - cron: "0 0 * * 3" # update indexes every Thursday in 00:00
@@ -28,7 +28,7 @@ jobs:
       - name: Build database
         run: make db-build
 
-      - name: Compress assets
+      - name: Compress database
         run: make db-compress
 
       - name: Move DB
