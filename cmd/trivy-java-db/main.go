@@ -25,7 +25,12 @@ func run() error {
 		return err
 	}
 
+	if cacheDirFromEnv := os.Getenv("TRIVY_JAVA_DB_CACHE"); cacheDirFromEnv != "" {
+		cacheDir = cacheDirFromEnv
+	}
+
 	dbDir := filepath.Join(cacheDir, "trivy-java-db")
+	log.Printf("Using the following database directory: %s", dbDir)
 
 	if err = db.Init(dbDir); err != nil {
 		return xerrors.Errorf("db init error: %w", err)

@@ -52,6 +52,10 @@ func TestCraw(t *testing.T) {
 			assert.NoError(t, err)
 
 			got := db.SelectIndexesByArtifactIDAndJarType("abbot", types.JarType)
+			// indexes are saved by ticker
+			// in this test it happens that crawl does not save 1 index,
+			// so we just check that there are indexes in the database
+			// correctness of saving in the database / selection from the database is checked in = db tests
 			if len(got) == 0 {
 				t.Errorf("no index was saved in the database")
 			}

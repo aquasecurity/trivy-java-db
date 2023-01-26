@@ -5,6 +5,7 @@ import (
 	"golang.org/x/xerrors"
 	"gorm.io/driver/sqlite"
 	"gorm.io/gorm"
+	"gorm.io/gorm/logger"
 	_ "modernc.org/sqlite"
 	"os"
 	"path/filepath"
@@ -31,7 +32,7 @@ func Init(cacheDir string) error {
 	//open db
 	var err error
 	db, err = gorm.Open(sqlite.Open(dbPath), &gorm.Config{
-		// Logger: logger.Default.LogMode(logger.Silent), // TODO disable logger????
+		Logger: logger.Default.LogMode(logger.Silent), // disable logger
 	})
 	if err != nil {
 		return xerrors.Errorf("can't open db: %w", err)
