@@ -3,7 +3,6 @@ package db
 import (
 	"github.com/aquasecurity/trivy-java-db/pkg/types"
 	"github.com/stretchr/testify/assert"
-	"os"
 	"testing"
 )
 
@@ -11,19 +10,6 @@ var (
 	indexJstl         = types.Index{GroupID: "jstl", ArtifactID: "jstl", Version: "1.0", Sha1: "9c581de633e94be1e7a955bd4e8292f16e554387", Type: types.JarType}
 	indexJavaxServlet = types.Index{GroupID: "javax.servlet", ArtifactID: "jstl", Version: "1.1.0", Sha1: "bca201e52333629c59e459e874e5ecd8f9899e15", Type: types.JarType}
 )
-
-func initDB() error {
-	tempDir, err := os.MkdirTemp("", "select-test")
-	if err != nil {
-		return err
-	}
-	err = Init(tempDir)
-	if err != nil {
-		return err
-	}
-	InsertIndexes([]*types.Index{&indexJstl, &indexJavaxServlet})
-	return nil
-}
 
 func TestSelectIndexBySha1(t *testing.T) {
 	tests := []struct {
@@ -44,7 +30,7 @@ func TestSelectIndexBySha1(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			err := initDB()
+			_, err := InitTmpDB([]*types.Index{&indexJstl, &indexJavaxServlet})
 			assert.NoError(t, err)
 
 			got := SelectIndexBySha1(tt.sha1)
@@ -81,7 +67,7 @@ func TestSelectIndexByArtifactIDAndGroupID(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			err := initDB()
+			_, err := InitTmpDB([]*types.Index{&indexJstl, &indexJavaxServlet})
 			assert.NoError(t, err)
 
 			got := SelectIndexByArtifactIDAndGroupID(tt.artifactID, tt.groupID)
@@ -118,7 +104,7 @@ func TestSelectIndexesByArtifactIDAndJarType(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			err := initDB()
+			_, err := InitTmpDB([]*types.Index{&indexJstl, &indexJavaxServlet})
 			assert.NoError(t, err)
 
 			got := SelectIndexesByArtifactIDAndJarType(tt.artifactID, tt.fileType)

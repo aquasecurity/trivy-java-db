@@ -2,7 +2,7 @@ package main
 
 import (
 	"context"
-	"github.com/aquasecurity/trivy-java-db/metadata"
+	"github.com/aquasecurity/trivy-java-db/pkg/metadata"
 	"log"
 	"os"
 	"path/filepath"

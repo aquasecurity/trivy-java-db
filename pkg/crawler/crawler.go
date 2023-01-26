@@ -4,8 +4,8 @@ import (
 	"context"
 	"encoding/xml"
 	"fmt"
-	"github.com/aquasecurity/trivy-java-db/metadata"
 	"github.com/aquasecurity/trivy-java-db/pkg/db"
+	"github.com/aquasecurity/trivy-java-db/pkg/metadata"
 	"github.com/aquasecurity/trivy-java-db/pkg/types"
 	"io"
 	"log"
@@ -24,6 +24,7 @@ import (
 const mavenRepoURL = "https://repo.maven.apache.org/maven2/"
 
 type Crawler struct {
+	rootUrl        string
 	wg             sync.WaitGroup
 	urlCh          chan string
 	indexCh        chan *types.Index
@@ -35,13 +36,18 @@ type Crawler struct {
 }
 
 type Option struct {
-	Limit int64
+	Limit   int64
+	rootUrl string
 }
 
 func NewCrawler(opt Option) Crawler {
 	client := retryablehttp.NewClient()
 	client.Logger = nil
+	if opt.rootUrl == "" {
+		opt.rootUrl = mavenRepoURL
+	}
 	return Crawler{
+		rootUrl:        opt.rootUrl,
 		urlCh:          make(chan string, opt.Limit*10),
 		indexCh:        make(chan *types.Index, opt.Limit),
 		tickerDuration: 500 * time.Millisecond,
@@ -56,7 +62,7 @@ func (c *Crawler) Crawl(ctx context.Context) error {
 	defer close(errCh)
 
 	// Add a root url
-	c.urlCh <- mavenRepoURL
+	c.urlCh <- c.rootUrl
 	c.wg.Add(1)
 
 	go func() {
@@ -98,18 +104,6 @@ loop:
 				log.Printf("Count: %d", count)
 			}
 			if !ok { // channel is closed
-				// save metadata
-				metaDB := metadata.Metadata{
-					Version:    db.SchemaVersion,
-					NextUpdate: c.clock.Now().UTC().Add(db.UpdateInterval),
-					UpdatedAt:  c.clock.Now().UTC(),
-				}
-				err := metadata.Update(metaDB)
-				if err != nil {
-					close(c.urlCh)
-					close(c.indexCh)
-					return err
-				}
 				break loop
 			}
 			if err := c.limit.Acquire(ctx, 1); err != nil {
@@ -128,6 +122,18 @@ loop:
 			return err
 		}
 
+	}
+	// save metadata
+	metaDB := metadata.Metadata{
+		Version:    db.SchemaVersion,
+		NextUpdate: c.clock.Now().UTC().Add(db.UpdateInterval),
+		UpdatedAt:  c.clock.Now().UTC(),
+	}
+	err := metadata.Update(metaDB)
+	if err != nil {
+		close(c.indexCh)
+		close(c.urlCh)
+		return err
 	}
 
 	return nil
