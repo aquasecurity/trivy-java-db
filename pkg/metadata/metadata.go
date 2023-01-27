@@ -2,7 +2,6 @@ package metadata
 
 import (
 	"encoding/json"
-	"github.com/aquasecurity/trivy-java-db/pkg/db"
 	"os"
 	"path/filepath"
 	"time"
@@ -23,8 +22,7 @@ var metaDBDir string
 
 // Path returns the metaData file path
 func Path(cacheDir string) string {
-	dbDir := db.Dir(cacheDir)
-	return filepath.Join(dbDir, metadataFile)
+	return filepath.Join(cacheDir, metadataFile)
 }
 
 func Init(cacheDir string) {

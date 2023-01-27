@@ -50,4 +50,4 @@ jobs:
           ./oras version
           ./oras push ghcr.io/${{ github.repository }}:latest \
           --manifest-config /dev/null:application/vnd.aquasec.trivy.config.v1+json \
-          db.tar.gz:application/vnd.aquasec.trivy.java.db.layer.v1.tar+gzip -d
+          db.tar.gz:application/vnd.aquasec.trivy.java.db.layer.v1.tar+gzip

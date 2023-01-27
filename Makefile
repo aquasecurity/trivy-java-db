@@ -13,5 +13,5 @@ db-build: trivy-java-db
 	TRIVY_JAVA_DB_CACHE=./cache ./trivy-java-db
 
 .PHONY: db-compress
-db-compress: cache/trivy-java-db/java-db/trivy-java.db cache/trivy-java-db/java-db/metadata.json
-	tar cvzf cache/trivy-java-db/java-db/db.tar.gz -C cache/trivy-java-db/java-db/ trivy-java.db metadata.json
+db-compress: cache/trivy-java-db/trivy-java.db cache/trivy-java-db/metadata.json
+	tar cvzf cache/trivy-java-db/db.tar.gz -C cache/trivy-java-db/ trivy-java.db metadata.json

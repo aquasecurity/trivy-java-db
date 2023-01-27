@@ -76,7 +76,7 @@ func TestSelectIndexByArtifactIDAndGroupID(t *testing.T) {
 	}
 }
 
-func TestSelectIndexesByArtifactIDAndJarType(t *testing.T) {
+func TestSelectIndexesByArtifactIDAndFileType(t *testing.T) {
 	var tests = []struct {
 		name       string
 		artifactID string
@@ -107,7 +107,7 @@ func TestSelectIndexesByArtifactIDAndJarType(t *testing.T) {
 			_, err := InitTmpDB([]*types.Index{&indexJstl, &indexJavaxServlet})
 			assert.NoError(t, err)
 
-			got := SelectIndexesByArtifactIDAndJarType(tt.artifactID, tt.fileType)
+			got := SelectIndexesByArtifactIDAndFileType(tt.artifactID, tt.fileType)
 			assert.Equal(t, tt.want, got)
 		})
 	}

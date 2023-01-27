@@ -45,12 +45,8 @@ func Init(cacheDir string) error {
 	return nil
 }
 
-func Dir(cacheDir string) string {
-	return filepath.Join(cacheDir, "java-db")
-}
-
 func Path(cacheDir string) string {
-	dbPath := filepath.Join(Dir(cacheDir), dbFileName)
+	dbPath := filepath.Join(cacheDir, dbFileName)
 	return dbPath
 }
 
@@ -74,7 +70,7 @@ func SelectIndexByArtifactIDAndGroupID(artifactID, groupID string) types.Index {
 	return index
 }
 
-func SelectIndexesByArtifactIDAndJarType(artifactID, fileType string) []types.Index {
+func SelectIndexesByArtifactIDAndFileType(artifactID, fileType string) []types.Index {
 	var indexes []types.Index
 	db.Where(&types.Index{ArtifactID: artifactID, Type: fileType}).Find(&indexes)
 	return indexes
