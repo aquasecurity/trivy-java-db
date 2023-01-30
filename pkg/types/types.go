@@ -1,5 +1,7 @@
 package types
 
+type ArchiveType string
+
 const (
 	// types of files
 	JarType = "jar"
@@ -7,9 +9,9 @@ const (
 )
 
 type Index struct {
-	GroupID    string
-	ArtifactID string
-	Version    string
-	Sha1       string
-	Type       string
+	GroupID     string
+	ArtifactID  string
+	Version     string
+	Sha1        string
+	ArchiveType ArchiveType
 }

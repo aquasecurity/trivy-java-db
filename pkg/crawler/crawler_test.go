@@ -1,15 +1,19 @@
-package crawler
+package crawler_test
 
 import (
 	"context"
-	"github.com/aquasecurity/trivy-java-db/pkg/db"
-	"github.com/aquasecurity/trivy-java-db/pkg/metadata"
-	"github.com/aquasecurity/trivy-java-db/pkg/types"
-	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 	"net/http"
 	"net/http/httptest"
 	"testing"
 	"time"
+
+	"github.com/stretchr/testify/assert"
+
+	"github.com/aquasecurity/trivy-java-db/pkg/crawler"
+	"github.com/aquasecurity/trivy-java-db/pkg/crawler/dbtest"
+	"github.com/aquasecurity/trivy-java-db/pkg/metadata"
+	"github.com/aquasecurity/trivy-java-db/pkg/types"
 )
 
 func TestCraw(t *testing.T) {
@@ -43,15 +47,19 @@ func TestCraw(t *testing.T) {
 			}))
 			defer ts.Close()
 
-			tempDir, err := db.InitTmpDB(nil)
+			db, err := dbtest.InitDB(t, nil)
 			assert.NoError(t, err)
-			metadata.Init(tempDir)
-			cl := NewCrawler(Option{rootUrl: ts.URL + "/maven2/", Limit: 1})
+			meta := metadata.New(db.Dir())
+			cl := crawler.NewCrawler(db, meta, crawler.Option{
+				RootUrl: ts.URL + "/maven2/",
+				Limit:   1,
+			})
 
 			err = cl.Crawl(context.Background())
 			assert.NoError(t, err)
 
-			got := db.SelectIndexesByArtifactIDAndFileType("abbot", types.JarType)
+			got, err := db.SelectIndexesByArtifactIDAndFileType("abbot", types.JarType)
+			require.NoError(t, err)
 			// indexes are saved by ticker
 			// in this test it happens that crawl does not save 1 index,
 			// so we just check that there are indexes in the database

@@ -2,7 +2,7 @@ package main
 
 import (
 	"context"
-	"github.com/aquasecurity/trivy-java-db/pkg/metadata"
+	"flag"
 	"log"
 	"os"
 	"path/filepath"
@@ -11,6 +11,7 @@ import (
 
 	"github.com/aquasecurity/trivy-java-db/pkg/crawler"
 	"github.com/aquasecurity/trivy-java-db/pkg/db"
+	"github.com/aquasecurity/trivy-java-db/pkg/metadata"
 )
 
 func main() {
@@ -20,27 +21,28 @@ func main() {
 }
 
 func run() error {
-	cacheDir, err := os.UserCacheDir()
+	userCacheDir, err := os.UserCacheDir()
 	if err != nil {
 		return err
 	}
 
-	if cacheDirFromEnv := os.Getenv("TRIVY_JAVA_DB_CACHE"); cacheDirFromEnv != "" {
-		cacheDir = cacheDirFromEnv
-	}
+	cacheDir := flag.String("cache-dir", userCacheDir, "cache dir")
+	flag.Parse()
 
-	dbDir := filepath.Join(cacheDir, "trivy-java-db")
-	log.Printf("Using the following database directory: %s", dbDir)
+	dbDir := filepath.Join(*cacheDir, "trivy-java-db")
+	log.Printf("The database directory: %s", dbDir)
 
-	if err = db.Init(dbDir); err != nil {
+	dbc, err := db.New(dbDir)
+	if err != nil {
 		return xerrors.Errorf("db init error: %w", err)
 	}
-	metadata.Init(dbDir)
+	meta := metadata.New(dbDir)
 
-	ctx := context.Background()
-	c := crawler.NewCrawler(crawler.Option{
+	c := crawler.NewCrawler(dbc, meta, crawler.Option{
 		Limit: 1000,
 	})
+
+	ctx := context.Background()
 	if err = c.Crawl(ctx); err != nil {
 		return xerrors.Errorf("crawl error: %w", err)
 	}

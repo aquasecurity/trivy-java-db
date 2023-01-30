@@ -4,56 +4,61 @@ import (
 	"context"
 	"encoding/xml"
 	"fmt"
-	"github.com/aquasecurity/trivy-java-db/pkg/db"
-	"github.com/aquasecurity/trivy-java-db/pkg/metadata"
-	"github.com/aquasecurity/trivy-java-db/pkg/types"
 	"io"
 	"log"
 	"net/http"
 	"strings"
 	"sync"
-	"time"
 
 	"github.com/PuerkitoBio/goquery"
 	"github.com/hashicorp/go-retryablehttp"
 	"golang.org/x/sync/semaphore"
 	"golang.org/x/xerrors"
 	"k8s.io/utils/clock"
+
+	"github.com/aquasecurity/trivy-java-db/pkg/db"
+	"github.com/aquasecurity/trivy-java-db/pkg/metadata"
+	"github.com/aquasecurity/trivy-java-db/pkg/types"
 )
 
 const mavenRepoURL = "https://repo.maven.apache.org/maven2/"
 
 type Crawler struct {
-	rootUrl        string
-	wg             sync.WaitGroup
-	urlCh          chan string
-	indexCh        chan *types.Index
-	saveIndexesWG  sync.WaitGroup
-	tickerDuration time.Duration
-	limit          *semaphore.Weighted
-	client         *retryablehttp.Client
-	clock          clock.Clock
+	db   db.DB
+	meta metadata.Client
+	http *retryablehttp.Client
+
+	rootUrl string
+	wg      sync.WaitGroup
+	urlCh   chan string
+	indexCh chan *types.Index
+	limit   *semaphore.Weighted
+	clock   clock.Clock
 }
 
 type Option struct {
 	Limit   int64
-	rootUrl string
+	RootUrl string
 }
 
-func NewCrawler(opt Option) Crawler {
+func NewCrawler(db db.DB, meta metadata.Client, opt Option) Crawler {
 	client := retryablehttp.NewClient()
 	client.Logger = nil
-	if opt.rootUrl == "" {
-		opt.rootUrl = mavenRepoURL
+
+	if opt.RootUrl == "" {
+		opt.RootUrl = mavenRepoURL
 	}
+
 	return Crawler{
-		rootUrl:        opt.rootUrl,
-		urlCh:          make(chan string, opt.Limit*10),
-		indexCh:        make(chan *types.Index, opt.Limit),
-		tickerDuration: 500 * time.Millisecond,
-		limit:          semaphore.NewWeighted(opt.Limit),
-		client:         client,
-		clock:          clock.RealClock{},
+		db:   db,
+		meta: meta,
+		http: client,
+
+		rootUrl: opt.RootUrl,
+		urlCh:   make(chan string, opt.Limit*10),
+		indexCh: make(chan *types.Index, opt.Limit),
+		limit:   semaphore.NewWeighted(opt.Limit),
+		clock:   clock.RealClock{},
 	}
 }
 
@@ -67,69 +72,78 @@ func (c *Crawler) Crawl(ctx context.Context) error {
 
 	go func() {
 		c.wg.Wait()
-		close(c.indexCh)
 		close(c.urlCh)
-		c.saveIndexesWG.Wait()
 	}()
 
-	go func() { // function for saving indexes in the database
-		c.saveIndexesWG.Add(1)
-		defer c.saveIndexesWG.Done()
-		ticker := time.NewTicker(c.tickerDuration)
-		defer ticker.Stop()
-		var indexes []*types.Index
-		for {
-			select {
-			case <-ticker.C: // save all indexes taken every c.tickerDuration
-				if len(indexes) > 0 {
-					db.InsertIndexes(indexes)
-					indexes = []*types.Index{} // clear array after saving to db
-				}
-			case index, ok := <-c.indexCh: // get index from chanel and save to array
-				if !ok {
-					return
-				}
-				indexes = append(indexes, index)
-			}
-		}
-	}()
+	// For the HTTP loop
+	go func() {
+		defer close(c.indexCh)
 
-	var count int
-loop:
-	for {
-		select {
-		case url, ok := <-c.urlCh:
+		var count int
+		for url := range c.urlCh {
 			count++
 			if count%1000 == 0 {
 				log.Printf("Count: %d", count)
 			}
-			if !ok { // channel is closed
-				break loop
-			}
 			if err := c.limit.Acquire(ctx, 1); err != nil {
-				return xerrors.Errorf("semaphore acquire error: %w", err)
+				errCh <- xerrors.Errorf("semaphore acquire error: %w", err)
+				return
 			}
-			go func() {
+			go func(url string) {
 				defer c.limit.Release(1)
 				defer c.wg.Done()
 				if err := c.Visit(url); err != nil {
 					errCh <- xerrors.Errorf("visit error: %w", err)
 				}
-			}()
+			}(url)
+		}
+	}()
+
+	// For the DB loop
+	dbDone := make(chan struct{})
+	go func() {
+		defer func() { dbDone <- struct{}{} }()
+
+		var indexes []*types.Index
+		for index := range c.indexCh {
+			indexes = append(indexes, index)
+			if len(indexes)%1000 == 0 {
+				if err := c.db.InsertIndexes(indexes); err != nil {
+					errCh <- err
+					return
+				}
+				indexes = []*types.Index{} // clear array after saving to db
+			}
+		}
+		// Insert the remaining indexes
+		if err := c.db.InsertIndexes(indexes); err != nil {
+			errCh <- err
+			return
+		}
+	}()
+
+loop:
+	for {
+		select {
+		// Wait for DB update to complete
+		case <-dbDone:
+			break loop
 		case err := <-errCh:
 			close(c.urlCh)
 			close(c.indexCh)
 			return err
-		}
 
+		}
 	}
+
 	// save metadata
 	metaDB := metadata.Metadata{
 		Version:    db.SchemaVersion,
 		NextUpdate: c.clock.Now().UTC().Add(db.UpdateInterval),
 		UpdatedAt:  c.clock.Now().UTC(),
 	}
-	err := metadata.Update(metaDB)
+
+	err := c.meta.Update(metaDB)
 	if err != nil {
 		close(c.indexCh)
 		close(c.urlCh)
@@ -140,7 +154,7 @@ loop:
 }
 
 func (c *Crawler) Visit(url string) error {
-	resp, err := c.client.Get(url)
+	resp, err := c.http.Get(url)
 	if err != nil {
 		return xerrors.Errorf("http get error (%s): %w", url, err)
 	}
@@ -199,7 +213,13 @@ func (c *Crawler) crawlSHA1(baseURL string, meta *Metadata) error {
 			return err
 		}
 		if sha1 != "" {
-			index := &types.Index{GroupID: meta.GroupID, ArtifactID: meta.ArtifactID, Version: version, Sha1: sha1, Type: types.JarType}
+			index := &types.Index{
+				GroupID:     meta.GroupID,
+				ArtifactID:  meta.ArtifactID,
+				Version:     version,
+				Sha1:        sha1,
+				ArchiveType: types.JarType,
+			}
 			c.indexCh <- index
 		}
 	}
@@ -207,7 +227,7 @@ func (c *Crawler) crawlSHA1(baseURL string, meta *Metadata) error {
 }
 
 func (c *Crawler) parseMetadata(url string) (*Metadata, error) {
-	resp, err := c.client.Get(url)
+	resp, err := c.http.Get(url)
 	if err != nil {
 		return nil, xerrors.Errorf("can't get url: %w", err)
 	}
@@ -231,7 +251,7 @@ func (c *Crawler) parseMetadata(url string) (*Metadata, error) {
 }
 
 func (c *Crawler) fetchSHA1(url string) (string, error) {
-	resp, err := c.client.Get(url)
+	resp, err := c.http.Get(url)
 	// some projects don't have xxx.jar and xxx.jar.sha1 files
 	if resp.StatusCode == http.StatusNotFound {
 		return "", nil // TODO add special error for this

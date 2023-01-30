@@ -11,6 +11,10 @@ import (
 
 const metadataFile = "metadata.json"
 
+type Client struct {
+	dir string
+}
+
 type Metadata struct {
 	Version      int `json:",omitempty"`
 	NextUpdate   time.Time
@@ -18,20 +22,20 @@ type Metadata struct {
 	DownloadedAt time.Time // This field will be filled after downloading.
 }
 
-var metaDBDir string
-
 // Path returns the metaData file path
 func Path(cacheDir string) string {
 	return filepath.Join(cacheDir, metadataFile)
 }
 
-func Init(cacheDir string) {
-	metaDBDir = Path(cacheDir)
+func New(cacheDir string) Client {
+	return Client{
+		dir: Path(cacheDir),
+	}
 }
 
 // Get returns the file metadata
-func Get() (Metadata, error) {
-	f, err := os.Open(metaDBDir)
+func (c *Client) Get() (Metadata, error) {
+	f, err := os.Open(c.dir)
 	if err != nil {
 		return Metadata{}, xerrors.Errorf("unable to open a file: %w", err)
 	}
@@ -44,12 +48,12 @@ func Get() (Metadata, error) {
 	return metadata, nil
 }
 
-func Update(meta Metadata) error {
-	if err := os.MkdirAll(filepath.Dir(metaDBDir), 0744); err != nil {
+func (c *Client) Update(meta Metadata) error {
+	if err := os.MkdirAll(filepath.Dir(c.dir), 0744); err != nil {
 		return xerrors.Errorf("mkdir error: %w", err)
 	}
 
-	f, err := os.Create(metaDBDir)
+	f, err := os.Create(c.dir)
 	if err != nil {
 		return xerrors.Errorf("unable to open a file: %w", err)
 	}
@@ -62,8 +66,8 @@ func Update(meta Metadata) error {
 }
 
 // Delete deletes the file of database metadata
-func Delete() error {
-	if err := os.Remove(metaDBDir); err != nil {
+func (c *Client) Delete() error {
+	if err := os.Remove(c.dir); err != nil {
 		return xerrors.Errorf("unable to remove the metadata file: %w", err)
 	}
 	return nil
