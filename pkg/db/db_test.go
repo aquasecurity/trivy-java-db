@@ -27,19 +27,22 @@ var (
 
 func TestSelectIndexBySha1(t *testing.T) {
 	tests := []struct {
-		name string
-		sha1 string
-		want types.Index
+		name      string
+		sha1      string
+		want      types.Index
+		assertErr assert.ErrorAssertionFunc
 	}{
 		{
-			name: "happy path",
-			sha1: "9c581de633e94be1e7a955bd4e8292f16e554387",
-			want: indexJstl,
+			name:      "happy path",
+			sha1:      "9c581de633e94be1e7a955bd4e8292f16e554387",
+			want:      indexJstl,
+			assertErr: assert.NoError,
 		},
 		{
-			name: "wrong sha1",
-			sha1: "wrong",
-			want: types.Index{},
+			name:      "wrong sha1",
+			sha1:      "wrong",
+			want:      types.Index{},
+			assertErr: assert.Error,
 		},
 	}
 	for _, tt := range tests {
@@ -51,7 +54,7 @@ func TestSelectIndexBySha1(t *testing.T) {
 			require.NoError(t, err)
 
 			got, err := dbc.SelectIndexBySha1(tt.sha1)
-			require.NoError(t, err)
+			tt.assertErr(t, err)
 			assert.Equal(t, tt.want, got)
 		})
 	}
@@ -63,24 +66,28 @@ func TestSelectIndexByArtifactIDAndGroupID(t *testing.T) {
 		groupID    string
 		artifactID string
 		want       types.Index
+		assertErr  assert.ErrorAssertionFunc
 	}{
 		{
 			name:       "happy path",
 			groupID:    "javax.servlet",
 			artifactID: "jstl",
 			want:       indexJavaxServlet,
+			assertErr:  assert.NoError,
 		},
 		{
 			name:       "wrong ArtifactID",
 			groupID:    "javax.servlet",
 			artifactID: "wrong",
 			want:       types.Index{},
+			assertErr:  assert.Error,
 		},
 		{
 			name:       "wrong GroupID",
 			groupID:    "wrong",
 			artifactID: "jstl",
 			want:       types.Index{},
+			assertErr:  assert.Error,
 		},
 	}
 	for _, tt := range tests {
@@ -92,7 +99,7 @@ func TestSelectIndexByArtifactIDAndGroupID(t *testing.T) {
 			require.NoError(t, err)
 
 			got, err := dbc.SelectIndexByArtifactIDAndGroupID(tt.artifactID, tt.groupID)
-			require.NoError(t, err)
+			tt.assertErr(t, err)
 			assert.Equal(t, tt.want, got)
 		})
 	}
