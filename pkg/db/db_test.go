@@ -1,7 +1,7 @@
 package db_test
 
 import (
-	"github.com/aquasecurity/trivy-java-db/pkg/crawler/dbtest"
+	"github.com/aquasecurity/trivy-java-db/pkg/dbtest"
 	"github.com/aquasecurity/trivy-java-db/pkg/types"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
