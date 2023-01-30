@@ -42,7 +42,7 @@ func TestSelectIndexBySha1(t *testing.T) {
 			name:      "wrong sha1",
 			sha1:      "wrong",
 			want:      types.Index{},
-			assertErr: assert.Error,
+			assertErr: assert.NoError,
 		},
 	}
 	for _, tt := range tests {
@@ -80,14 +80,14 @@ func TestSelectIndexByArtifactIDAndGroupID(t *testing.T) {
 			groupID:    "javax.servlet",
 			artifactID: "wrong",
 			want:       types.Index{},
-			assertErr:  assert.Error,
+			assertErr:  assert.NoError,
 		},
 		{
 			name:       "wrong GroupID",
 			groupID:    "wrong",
 			artifactID: "jstl",
 			want:       types.Index{},
-			assertErr:  assert.Error,
+			assertErr:  assert.NoError,
 		},
 	}
 	for _, tt := range tests {
