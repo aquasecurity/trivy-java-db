@@ -1,6 +1,7 @@
 package db
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"time"
@@ -72,7 +73,10 @@ func (db *DB) InsertIndexes(indexes []*types.Index) error {
 
 func (db *DB) SelectIndexBySha1(sha1 string) (types.Index, error) {
 	index := types.Index{}
-	if result := db.client.Where(&types.Index{Sha1: sha1}).First(&index); result.Error != nil {
+	result := db.client.Where(&types.Index{Sha1: sha1}).First(&index)
+	if errors.Is(result.Error, gorm.ErrRecordNotFound) {
+		return types.Index{}, nil
+	} else if result.Error != nil {
 		return types.Index{}, xerrors.Errorf("select error: %w", result.Error)
 	}
 	return index, nil
@@ -84,7 +88,9 @@ func (db *DB) SelectIndexByArtifactIDAndGroupID(artifactID, groupID string) (typ
 		ArtifactID: artifactID,
 		GroupID:    groupID,
 	}).First(&index)
-	if result.Error != nil {
+	if errors.Is(result.Error, gorm.ErrRecordNotFound) {
+		return types.Index{}, nil
+	} else if result.Error != nil {
 		return types.Index{}, xerrors.Errorf("select error: %w", result.Error)
 	}
 	return index, nil
@@ -97,7 +103,9 @@ func (db *DB) SelectIndexesByArtifactIDAndFileType(artifactID string, fileType t
 		ArtifactID:  artifactID,
 		ArchiveType: fileType,
 	}).Find(&indexes)
-	if result.Error != nil {
+	if errors.Is(result.Error, gorm.ErrRecordNotFound) {
+		return nil, nil
+	} else if result.Error != nil {
 		return nil, xerrors.Errorf("select error: %w", result.Error)
 	}
 	return indexes, nil
