@@ -2,16 +2,16 @@ package crawler_test
 
 import (
 	"context"
-	"github.com/stretchr/testify/require"
 	"net/http"
 	"net/http/httptest"
 	"testing"
 	"time"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 
 	"github.com/aquasecurity/trivy-java-db/pkg/crawler"
-	"github.com/aquasecurity/trivy-java-db/pkg/crawler/dbtest"
+	"github.com/aquasecurity/trivy-java-db/pkg/dbtest"
 	"github.com/aquasecurity/trivy-java-db/pkg/metadata"
 	"github.com/aquasecurity/trivy-java-db/pkg/types"
 )
