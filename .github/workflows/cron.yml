@@ -31,7 +31,7 @@ jobs:
         run: make db-compress
 
       - name: Move DB
-        run: mv cache/trivy-java-db/java-db/db.tar.gz .
+        run: mv cache/trivy-java-db/db.tar.gz .
 
       - name: Login to GitHub Packages Container registry
         uses: docker/login-action@v1
