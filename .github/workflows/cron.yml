@@ -31,7 +31,7 @@ jobs:
         run: make db-compress
 
       - name: Move DB
-        run: mv cache/trivy-java-db/db.tar.gz .
+        run: mv cache/trivy-java-db/javadb.tar.gz .
 
       - name: Login to GitHub Packages Container registry
         uses: docker/login-action@v1
@@ -45,4 +45,4 @@ jobs:
           oras version
           oras push ghcr.io/${{ github.repository }}:${DB_VERSION} \
           --config /dev/null:application/vnd.aquasec.trivy.config.v1+json \
-          db.tar.gz:application/vnd.aquasec.trivy.javadb.layer.v1.tar+gzip
+          javadb.tar.gz:application/vnd.aquasec.trivy.javadb.layer.v1.tar+gzip

@@ -19,7 +19,7 @@ cache/*: trivy-java-db
 
 .PHONY: db-compress
 db-compress: cache/*
-	tar cvzf cache/trivy-java-db/db.tar.gz -C cache/trivy-java-db/ trivy-java.db metadata.json
+	tar cvzf cache/trivy-java-db/javadb.tar.gz -C cache/trivy-java-db/ trivy-java.db metadata.json
 
 .PHONY: clean
 clean:
