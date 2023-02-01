@@ -7,10 +7,9 @@ import (
 	"time"
 
 	"golang.org/x/xerrors"
-	"gorm.io/driver/sqlite"
+	"github.com/glebarez/sqlite"
 	"gorm.io/gorm"
 	"gorm.io/gorm/logger"
-	_ "modernc.org/sqlite"
 
 	"github.com/aquasecurity/trivy-java-db/pkg/types"
 )
