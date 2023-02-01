@@ -2,7 +2,7 @@
 name: Trivy Java DB
 on:
   schedule:
-    - cron: "0 0 * * 3" # update indexes every Thursday in 00:00
+    - cron: "0 0 * * *" # update indexes every day in 00:00
   workflow_dispatch:
 env:
   GH_USER: aqua-bot
