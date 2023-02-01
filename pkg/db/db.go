@@ -18,7 +18,7 @@ import (
 const (
 	dbFileName     = "trivy-java.db"
 	SchemaVersion  = 1
-	UpdateInterval = time.Hour * 168 // 1 week
+	UpdateInterval = time.Hour * 72 // 3 days
 )
 
 type DB struct {

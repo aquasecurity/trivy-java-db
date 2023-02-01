@@ -9,7 +9,15 @@ The DB is used in Trivy to discover information about `jars` without GAV inside 
 Every Thursday in 00:00
 
 ## Download the java indexes database
-You can download the actual compiled database via [Oras CLI](https://oras.land/cli/).
+You can download the actual compiled database via [Trivy](https://aquasecurity.github.io/trivy/) or [Oras CLI](https://oras.land/cli/).
+
+Trivy:
+```sh
+TRIVY_TEMP_DIR=$(mktemp -d)
+trivy --cache-dir $TRIVY_TEMP_DIR image --download-java-db-only
+tar -cf ./javadb.tar.gz -C $TRIVY_TEMP_DIR/java-db metadata.json trivy-java.db
+rm -rf $TRIVY_TEMP_DIR
+```
 
 oras >= v0.13.0:
 ```sh
