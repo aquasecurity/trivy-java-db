@@ -2,6 +2,7 @@ package crawler
 
 import (
 	"context"
+	"encoding/hex"
 	"encoding/xml"
 	"fmt"
 	"io"
@@ -150,6 +151,13 @@ loop:
 		return err
 	}
 
+	err = c.db.NormalizationDB()
+	if err != nil {
+		close(c.indexCh)
+		close(c.urlCh)
+		return err
+	}
+
 	return nil
 }
 
@@ -212,7 +220,7 @@ func (c *Crawler) crawlSHA1(baseURL string, meta *Metadata) error {
 		if err != nil {
 			return err
 		}
-		if sha1 != "" {
+		if len(sha1) != 0 {
 			index := &types.Index{
 				GroupID:     meta.GroupID,
 				ArtifactID:  meta.ArtifactID,
@@ -250,22 +258,40 @@ func (c *Crawler) parseMetadata(url string) (*Metadata, error) {
 	return &meta, nil
 }
 
-func (c *Crawler) fetchSHA1(url string) (string, error) {
+func (c *Crawler) fetchSHA1(url string) ([]byte, error) {
 	resp, err := c.http.Get(url)
 	// some projects don't have xxx.jar and xxx.jar.sha1 files
 	if resp.StatusCode == http.StatusNotFound {
-		return "", nil // TODO add special error for this
+		return nil, nil // TODO add special error for this
 	}
 	if err != nil {
-		return "", xerrors.Errorf("can't get sha1 from %s: %w", url, err)
+		return nil, xerrors.Errorf("can't get sha1 from %s: %w", url, err)
 	}
 	defer resp.Body.Close()
 
 	sha1, err := io.ReadAll(resp.Body)
 	if err != nil {
-		return "", xerrors.Errorf("can't read sha1 %s: %w", url, err)
+		return nil, xerrors.Errorf("can't read sha1 %s: %w", url, err)
 	}
-	// there are xxx.jar.sha1 files with additional data. Sha1 is always 1st word.
-	// e.g.https://repo.maven.apache.org/maven2/aspectj/aspectjrt/1.5.2a/aspectjrt-1.5.2a.jar.sha1
-	return strings.Split(strings.TrimSpace(string(sha1)), " ")[0], nil
+
+	// there are empty xxx.jar.sha1 files. Skip them.
+	// e.g. https://repo.maven.apache.org/maven2/org/wso2/msf4j/msf4j-swagger/2.5.2/msf4j-swagger-2.5.2.jar.sha1
+	// https://repo.maven.apache.org/maven2/org/wso2/carbon/analytics/org.wso2.carbon.permissions.rest.api/2.0.248/org.wso2.carbon.permissions.rest.api-2.0.248.jar.sha1
+	if len(sha1) == 0 {
+		return nil, nil
+	}
+	// there are xxx.jar.sha1 files with additional data. e.g.:
+	// https://repo.maven.apache.org/maven2/aspectj/aspectjrt/1.5.2a/aspectjrt-1.5.2a.jar.sha1
+	// https://repo.maven.apache.org/maven2/xerces/xercesImpl/2.9.0/xercesImpl-2.9.0.jar.sha1
+	var sha1b []byte
+	for _, s := range strings.Split(strings.TrimSpace(string(sha1)), " ") {
+		sha1b, err = hex.DecodeString(s)
+		if err == nil {
+			break
+		}
+	}
+	if len(sha1b) == 0 {
+		return nil, xerrors.Errorf("failed to decode sha1 %s: %w", url, err)
+	}
+	return sha1b, nil
 }

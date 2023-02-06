@@ -12,6 +12,6 @@ type Index struct {
 	GroupID     string
 	ArtifactID  string
 	Version     string
-	Sha1        string
+	Sha1        []byte
 	ArchiveType ArchiveType
 }

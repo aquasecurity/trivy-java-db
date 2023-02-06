@@ -18,5 +18,7 @@ func InitDB(t *testing.T, indexes []*types.Index) (db.DB, error) {
 		err = dbc.InsertIndexes(indexes)
 		require.NoError(t, err)
 	}
+	err = dbc.NormalizationDB()
+	require.NoError(t, err)
 	return dbc, nil
 }
