@@ -77,7 +77,6 @@ func TestCraw(t *testing.T) {
 			}))
 			defer ts.Close()
 
-			//db, err := dbtest.InitDB(t, nil)
 			tmpDir := t.TempDir()
 			dbc, err := db.New(tmpDir)
 			require.NoError(t, err)
