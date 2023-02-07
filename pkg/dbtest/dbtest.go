@@ -14,11 +14,13 @@ func InitDB(t *testing.T, indexes []*types.Index) (db.DB, error) {
 	dbc, err := db.New(tmpDir)
 	require.NoError(t, err)
 
+	err = dbc.Init()
+	require.NoError(t, err)
+
 	if len(indexes) > 0 {
 		err = dbc.InsertIndexes(indexes)
 		require.NoError(t, err)
 	}
-	err = dbc.NormalizationDB()
 	require.NoError(t, err)
 	return dbc, nil
 }

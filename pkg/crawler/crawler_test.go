@@ -3,7 +3,7 @@ package crawler_test
 import (
 	"context"
 	"encoding/hex"
-	"github.com/aquasecurity/trivy-java-db/pkg/db"
+	"github.com/aquasecurity/trivy-java-db/pkg/dbtest"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"net/http"
@@ -77,8 +77,7 @@ func TestCraw(t *testing.T) {
 			}))
 			defer ts.Close()
 
-			tmpDir := t.TempDir()
-			dbc, err := db.New(tmpDir)
+			dbc, err := dbtest.InitDB(t, nil)
 			require.NoError(t, err)
 			meta := metadata.New(dbc.Dir())
 			cl := crawler.NewCrawler(dbc, meta, crawler.Option{
