@@ -4,7 +4,6 @@ import (
 	"database/sql"
 	"encoding/hex"
 	"errors"
-	"log"
 	"os"
 	"path/filepath"
 	"time"
@@ -45,23 +44,13 @@ func New(cacheDir string) (DB, error) {
 		return DB{}, xerrors.Errorf("can't open db: %w", err)
 	}
 
-	_, err = db.Exec("CREATE TABLE `primary_indices`(`group_id` TEXT, `artifact_id` TEXT, `version` TEXT, `sha1` BLOB UNIQUE, archive_type TEXT);")
-	if err != nil {
-		return DB{}, err
-	}
-
 	return DB{
 		client: db,
 		dir:    dbDir,
 	}, nil
 }
 
-func (db *DB) Dir() string {
-	return db.dir
-}
-
-func (db *DB) NormalizationDB() error {
-	log.Printf("DB normalization")
+func (db *DB) Init() error {
 	if _, err := db.client.Exec("CREATE TABLE artifacts(idx INTEGER PRIMARY KEY, group_id TEXT, artifact_id TEXT)"); err != nil {
 		return xerrors.Errorf("unable to create 'artifacts' table: %w", err)
 	}
@@ -69,30 +58,26 @@ func (db *DB) NormalizationDB() error {
 		return xerrors.Errorf("unable to create 'indices' table: %w", err)
 	}
 
-	if _, err := db.client.Exec("INSERT INTO artifacts(group_id, artifact_id) SELECT group_id, artifact_id FROM primary_indices GROUP BY group_id, artifact_id;"); err != nil {
-		return xerrors.Errorf("unable to populate 'artifacts' table: %w", err)
-	}
-	if _, err := db.client.Exec("INSERT INTO indices(artifact_idx, version, sha1, archive_type) SELECT a.idx, i.version, i.sha1, i.archive_type FROM primary_indices i JOIN artifacts a ON i.group_id = a.group_id AND i.artifact_id = a.artifact_id;"); err != nil {
-		return xerrors.Errorf("unable to populate 'indices' table: %w", err)
-	}
-
-	if _, err := db.client.Exec("CREATE INDEX artifacts_idx ON artifacts(group_id, artifact_id)"); err != nil {
+	if _, err := db.client.Exec("CREATE UNIQUE INDEX artifacts_idx ON artifacts(group_id, artifact_id)"); err != nil {
 		return xerrors.Errorf("unable to create 'artifacts_idx' index: %w", err)
 	}
-	if _, err := db.client.Exec("CREATE INDEX indices_sha1_idx ON indices(sha1)"); err != nil {
+	if _, err := db.client.Exec("CREATE UNIQUE INDEX indices_sha1_idx ON indices(sha1)"); err != nil {
 		return xerrors.Errorf("unable to create 'indices_sha1_idx' index: %w", err)
 	}
 	if _, err := db.client.Exec("CREATE INDEX indices_artifact_idx ON indices(artifact_idx)"); err != nil {
 		return xerrors.Errorf("unable to create 'indices_artifact_idx' index: %w", err)
 	}
+	return nil
+}
 
-	if _, err := db.client.Exec("DROP TABLE primary_indices"); err != nil {
-		return xerrors.Errorf("unable to drop 'primary_indices' index: %w", err)
-	}
+func (db *DB) Dir() string {
+	return db.dir
+}
+
+func (db *DB) VacuumDB() error {
 	if _, err := db.client.Exec("VACUUM"); err != nil {
 		return xerrors.Errorf("vacuum database error: %w", err)
 	}
-	log.Printf("DB has been normalized")
 	return nil
 }
 
@@ -107,10 +92,13 @@ func (db *DB) InsertIndexes(indexes []*types.Index) error {
 	}
 	defer tx.Rollback()
 	for _, i := range indexes {
-		_, err := tx.Exec(`INSERT OR IGNORE INTO primary_indices(group_id, artifact_id, version, sha1, archive_type) VALUES (?, ?, ?, ?, ?)`, i.GroupID, i.ArtifactID, i.Version, i.Sha1, i.ArchiveType)
+		_, err := tx.Exec(`INSERT OR IGNORE INTO artifacts(group_id, artifact_id) VALUES (?, ?)`, i.GroupID, i.ArtifactID)
 		if err != nil {
-			log.Printf("%+v", i)
-			return err
+			return xerrors.Errorf("unable to insert to 'artifacts' table: %w", err)
+		}
+		if _, err = tx.Exec(`INSERT OR IGNORE INTO indices(artifact_idx, version, sha1, archive_type) VALUES ((SELECT last_insert_rowid()), ?, ?, ?)`,
+			i.Version, i.Sha1, i.ArchiveType); err != nil {
+			return xerrors.Errorf("unable to insert to 'indices' table: %w", err)
 		}
 	}
 	return tx.Commit()

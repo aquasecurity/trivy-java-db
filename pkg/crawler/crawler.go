@@ -121,6 +121,11 @@ func (c *Crawler) Crawl(ctx context.Context) error {
 			errCh <- err
 			return
 		}
+		// vacuum db to decrease db size
+		if err := c.db.VacuumDB(); err != nil {
+			errCh <- err
+			return
+		}
 	}()
 
 loop:
@@ -145,13 +150,6 @@ loop:
 	}
 
 	err := c.meta.Update(metaDB)
-	if err != nil {
-		close(c.indexCh)
-		close(c.urlCh)
-		return err
-	}
-
-	err = c.db.NormalizationDB()
 	if err != nil {
 		close(c.indexCh)
 		close(c.urlCh)

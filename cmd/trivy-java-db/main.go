@@ -34,6 +34,9 @@ func run() error {
 
 	dbc, err := db.New(dbDir)
 	if err != nil {
+		return xerrors.Errorf("db create error: %w", err)
+	}
+	if err = dbc.Init(); err != nil {
 		return xerrors.Errorf("db init error: %w", err)
 	}
 	meta := metadata.New(dbDir)
