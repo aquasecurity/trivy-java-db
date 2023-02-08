@@ -27,7 +27,6 @@ const (
 
 type DB struct {
 	client *sql.DB
-	meta   metadata.Client
 	dir    string
 	clock  clock.Clock
 }
@@ -37,7 +36,7 @@ func Path(cacheDir string) string {
 	return dbPath
 }
 
-func New(cacheDir string, meta metadata.Client) (DB, error) {
+func New(cacheDir string) (DB, error) {
 	dbPath := Path(cacheDir)
 	dbDir := filepath.Dir(dbPath)
 	if err := os.MkdirAll(dbDir, 0700); err != nil {
@@ -53,7 +52,6 @@ func New(cacheDir string, meta metadata.Client) (DB, error) {
 
 	return DB{
 		client: db,
-		meta:   meta,
 		dir:    dbDir,
 		clock:  clock.RealClock{},
 	}, nil
@@ -94,7 +92,7 @@ func (db *DB) VacuumDB() error {
 // functions to interaction with DB //
 //////////////////////////////////////
 
-func (db *DB) BuildDB() error {
+func (db *DB) BuildDB(meta metadata.Client) error {
 	indexesDir := filepath.Join(db.dir, crawler.IndexesDir)
 	var indexes []*crawler.Index
 	if err := utils.FileWalk(indexesDir, func(r io.Reader, path string) error {
@@ -128,7 +126,7 @@ func (db *DB) BuildDB() error {
 		NextUpdate: db.clock.Now().UTC().Add(updateInterval),
 		UpdatedAt:  db.clock.Now().UTC(),
 	}
-	if err := db.meta.Update(metaDB); err != nil {
+	if err := meta.Update(metaDB); err != nil {
 		return xerrors.Errorf("failed to update metadata: %w", err)
 	}
 

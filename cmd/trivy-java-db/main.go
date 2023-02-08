@@ -52,15 +52,15 @@ func run() error {
 
 	if *build {
 		log.Printf("The database directory: %s", dbDir)
-		meta := metadata.New(dbDir)
-		dbc, err := db.New(dbDir, meta)
+		dbc, err := db.New(dbDir)
 		if err != nil {
 			return xerrors.Errorf("db create error: %w", err)
 		}
 		if err = dbc.Init(); err != nil {
 			return xerrors.Errorf("db init error: %w", err)
 		}
-		if err = dbc.BuildDB(); err != nil {
+		meta := metadata.New(dbDir)
+		if err = dbc.BuildDB(meta); err != nil {
 			return xerrors.Errorf("insert indexes to db error: %w", err)
 		}
 	}
