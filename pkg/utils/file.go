@@ -13,8 +13,7 @@ import (
 )
 
 func FileWalk(root string, walkFn func(r io.Reader, path string) error) error {
-	indexesDir := filepath.Join(root, "indexes_old")
-	if err := filepath.WalkDir(indexesDir, func(path string, d fs.DirEntry, err error) error {
+	if err := filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
 			return err
 		} else if d.IsDir() {
@@ -48,13 +47,12 @@ func FileWalk(root string, walkFn func(r io.Reader, path string) error) error {
 }
 
 func WriteJSON(dir string, index *types.Index) error {
-	groupIdDir := filepath.Join(dir, index.GroupID)
-	if err := os.MkdirAll(groupIdDir, os.ModePerm); err != nil {
+	if err := os.MkdirAll(dir, os.ModePerm); err != nil {
 		return xerrors.Errorf("unable to create a directory: %w", err)
 	}
 
 	fileName := fmt.Sprintf("%s.json", index.ArtifactID)
-	filePath := filepath.Join(groupIdDir, fileName)
+	filePath := filepath.Join(dir, fileName)
 	f, err := os.Create(filePath)
 	if err != nil {
 		return xerrors.Errorf("unable to open %s: %w", filePath, err)

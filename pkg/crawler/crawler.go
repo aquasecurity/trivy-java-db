@@ -182,7 +182,7 @@ func (c *Crawler) Visit(url string) error {
 func (c *Crawler) crawlSHA1(baseURL string, meta *Metadata) error {
 	var versions []types.Version
 	for _, version := range meta.Versioning.Versions {
-		sha1FileName := fmt.Sprintf("%s-%s.jar.sha1", meta.ArtifactID, version)
+		sha1FileName := fmt.Sprintf("/%s-%s.jar.sha1", meta.ArtifactID, version)
 		sha1, err := c.fetchSHA1(baseURL + version + sha1FileName)
 		if err != nil {
 			return err
