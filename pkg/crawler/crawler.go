@@ -14,7 +14,6 @@ import (
 	"sync"
 
 	"github.com/PuerkitoBio/goquery"
-	"github.com/aquasecurity/trivy-java-db/pkg/types"
 	"github.com/hashicorp/go-retryablehttp"
 	"golang.org/x/sync/semaphore"
 	"golang.org/x/xerrors"
@@ -29,7 +28,7 @@ type Crawler struct {
 	rootUrl string
 	wg      sync.WaitGroup
 	urlCh   chan string
-	indexCh chan *types.Index
+	indexCh chan *Index
 	limit   *semaphore.Weighted
 }
 
@@ -55,7 +54,7 @@ func NewCrawler(opt Option) Crawler {
 
 		rootUrl: opt.RootUrl,
 		urlCh:   make(chan string, opt.Limit*10),
-		indexCh: make(chan *types.Index, opt.Limit),
+		indexCh: make(chan *Index, opt.Limit),
 		limit:   semaphore.NewWeighted(opt.Limit),
 	}
 }
@@ -99,12 +98,14 @@ func (c *Crawler) Crawl(ctx context.Context) error {
 
 	// For the DB loop
 	dbDone := make(chan struct{})
-	indexesDir := filepath.Join(c.dir, types.IndexesDir)
+	indexesDir := filepath.Join(c.dir, IndexesDir)
 	go func() {
 		defer func() { dbDone <- struct{}{} }()
 
 		for index := range c.indexCh {
-			if err := utils.WriteJSON(indexesDir, index); err != nil {
+			fileName := fmt.Sprintf("%s.json", index.ArtifactID)
+			filePath := filepath.Join(indexesDir, index.GroupID, fileName)
+			if err := utils.WriteJSON(filePath, index); err != nil {
 				errCh <- err
 				return
 			}
@@ -180,7 +181,7 @@ func (c *Crawler) Visit(url string) error {
 }
 
 func (c *Crawler) crawlSHA1(baseURL string, meta *Metadata) error {
-	var versions []types.Version
+	var versions []Version
 	for _, version := range meta.Versioning.Versions {
 		sha1FileName := fmt.Sprintf("/%s-%s.jar.sha1", meta.ArtifactID, version)
 		sha1, err := c.fetchSHA1(baseURL + version + sha1FileName)
@@ -188,7 +189,7 @@ func (c *Crawler) crawlSHA1(baseURL string, meta *Metadata) error {
 			return err
 		}
 		if len(sha1) != 0 {
-			v := types.Version{
+			v := Version{
 				Version: version,
 				Sha1:    sha1,
 			}
@@ -196,11 +197,11 @@ func (c *Crawler) crawlSHA1(baseURL string, meta *Metadata) error {
 		}
 	}
 	if len(versions) > 0 {
-		index := &types.Index{
+		index := &Index{
 			GroupID:     meta.GroupID,
 			ArtifactID:  meta.ArtifactID,
 			Versions:    versions,
-			ArchiveType: types.JarType,
+			ArchiveType: JarType,
 		}
 		c.indexCh <- index
 	}

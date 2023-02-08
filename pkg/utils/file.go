@@ -2,8 +2,6 @@ package utils
 
 import (
 	"encoding/json"
-	"fmt"
-	"github.com/aquasecurity/trivy-java-db/pkg/types"
 	"golang.org/x/xerrors"
 	"io"
 	"io/fs"
@@ -46,13 +44,11 @@ func FileWalk(root string, walkFn func(r io.Reader, path string) error) error {
 	return nil
 }
 
-func WriteJSON(dir string, index *types.Index) error {
-	if err := os.MkdirAll(dir, os.ModePerm); err != nil {
+func WriteJSON(filePath string, index interface{}) error {
+	if err := os.MkdirAll(filepath.Dir(filePath), os.ModePerm); err != nil {
 		return xerrors.Errorf("unable to create a directory: %w", err)
 	}
 
-	fileName := fmt.Sprintf("%s.json", index.ArtifactID)
-	filePath := filepath.Join(dir, fileName)
 	f, err := os.Create(filePath)
 	if err != nil {
 		return xerrors.Errorf("unable to open %s: %w", filePath, err)

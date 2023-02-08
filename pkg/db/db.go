@@ -5,8 +5,8 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"github.com/aquasecurity/trivy-java-db/pkg/crawler"
 	"github.com/aquasecurity/trivy-java-db/pkg/metadata"
-	"github.com/aquasecurity/trivy-java-db/pkg/types"
 	"github.com/aquasecurity/trivy-java-db/pkg/utils"
 	"io"
 	"k8s.io/utils/clock"
@@ -95,10 +95,10 @@ func (db *DB) VacuumDB() error {
 //////////////////////////////////////
 
 func (db *DB) BuildDB() error {
-	indexesDir := filepath.Join(db.dir, types.IndexesDir)
-	var indexes []*types.Index
+	indexesDir := filepath.Join(db.dir, crawler.IndexesDir)
+	var indexes []*crawler.Index
 	if err := utils.FileWalk(indexesDir, func(r io.Reader, path string) error {
-		index := &types.Index{}
+		index := &crawler.Index{}
 		if err := json.NewDecoder(r).Decode(index); err != nil {
 			return xerrors.Errorf("failed to decode index: %w", err)
 		}
@@ -107,7 +107,7 @@ func (db *DB) BuildDB() error {
 			if err := db.InsertIndexes(indexes); err != nil {
 				return xerrors.Errorf("failed to insert indexes to db: %w", err)
 			}
-			indexes = []*types.Index{} // clear array after saving to db
+			indexes = []*crawler.Index{} // clear array after saving to db
 		}
 		return nil
 	}); err != nil {
@@ -135,7 +135,7 @@ func (db *DB) BuildDB() error {
 	return nil
 }
 
-func (db *DB) InsertIndexes(indexes []*types.Index) error {
+func (db *DB) InsertIndexes(indexes []*crawler.Index) error {
 	tx, err := db.client.Begin()
 	if err != nil {
 		return err
@@ -157,45 +157,45 @@ func (db *DB) InsertIndexes(indexes []*types.Index) error {
 	return tx.Commit()
 }
 
-func (db *DB) SelectIndexBySha1(sha1 string) (types.Index, error) {
-	index := types.Index{}
+func (db *DB) SelectIndexBySha1(sha1 string) (Index, error) {
+	index := Index{}
 	sha1b, err := hex.DecodeString(sha1)
 	if err != nil {
 		return index, xerrors.Errorf("sha1 decode error: %w", err)
 	}
 	row := db.client.QueryRow(`Select a.group_id, a.artifact_id, i.version, i.sha1, i.archive_type from indices i JOIN artifacts a ON a.id = i.artifact_id
                                                                    where i.sha1 = ?`, sha1b)
-	err = row.Scan(&index.GroupID, &index.ArtifactID, &index.Versions[0].Version, &index.Versions[0].Sha1, &index.ArchiveType)
+	err = row.Scan(&index.GroupID, &index.ArtifactID, &index.Version, &index.Sha1, &index.ArchiveType)
 	if err != nil && !errors.Is(err, sql.ErrNoRows) {
 		return index, xerrors.Errorf("select index error: %w", err)
 	}
 	return index, nil
 }
 
-func (db *DB) SelectIndexByArtifactIDAndGroupID(artifactID, groupID string) (types.Index, error) {
-	index := types.Index{}
+func (db *DB) SelectIndexByArtifactIDAndGroupID(artifactID, groupID string) (Index, error) {
+	index := Index{}
 	row := db.client.QueryRow(`Select a.group_id, a.artifact_id, i.version, i.sha1, i.archive_type from indices i JOIN artifacts a ON a.id = i.artifact_id
                                                                    where a.group_id = ? AND a.artifact_id = ?`, groupID, artifactID)
-	err := row.Scan(&index.GroupID, &index.ArtifactID, &index.Versions[0].Version, &index.Versions[0].Sha1, &index.ArchiveType)
+	err := row.Scan(&index.GroupID, &index.ArtifactID, &index.Version, &index.Sha1, &index.ArchiveType)
 	if err != nil && !errors.Is(err, sql.ErrNoRows) {
 		return index, xerrors.Errorf("select index error: %w", err)
 	}
 	return index, nil
 }
 
-//func (db *DB) SelectIndexesByArtifactIDAndFileType(artifactID string, fileType types.ArchiveType) ([]types.Index, error) {
-//	var indexes []types.Index
-//	rows, err := db.client.Query(`Select a.group_id, a.artifact_id, i.version, i.sha1, i.archive_type from indices i JOIN artifacts a ON a.id = i.artifact_id
-//                                                                   where a.artifact_id = ? AND i.archive_type = ?`, artifactID, fileType)
-//	if err != nil && !errors.Is(err, sql.ErrNoRows) {
-//		return nil, xerrors.Errorf("select indexes error: %w", err)
-//	}
-//	for rows.Next() {
-//		var index types.Index
-//		if err = rows.Scan(&index.GroupID, &index.ArtifactID, &index.Version, &index.Sha1, &index.ArchiveType); err != nil {
-//			return nil, xerrors.Errorf("scan row error: %w", err)
-//		}
-//		indexes = append(indexes, index)
-//	}
-//	return indexes, nil
-//}
+func (db *DB) SelectIndexesByArtifactIDAndFileType(artifactID string, fileType crawler.ArchiveType) ([]Index, error) {
+	var indexes []Index
+	rows, err := db.client.Query(`Select a.group_id, a.artifact_id, i.version, i.sha1, i.archive_type from indices i JOIN artifacts a ON a.id = i.artifact_id
+                                                                  where a.artifact_id = ? AND i.archive_type = ?`, artifactID, fileType)
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return nil, xerrors.Errorf("select indexes error: %w", err)
+	}
+	for rows.Next() {
+		var index Index
+		if err = rows.Scan(&index.GroupID, &index.ArtifactID, &index.Version, &index.Sha1, &index.ArchiveType); err != nil {
+			return nil, xerrors.Errorf("scan row error: %w", err)
+		}
+		indexes = append(indexes, index)
+	}
+	return indexes, nil
+}
