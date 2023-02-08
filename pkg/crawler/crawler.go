@@ -28,7 +28,6 @@ type Crawler struct {
 	rootUrl string
 	wg      sync.WaitGroup
 	urlCh   chan string
-	indexCh chan *Index
 	limit   *semaphore.Weighted
 }
 
@@ -47,14 +46,11 @@ func NewCrawler(opt Option) Crawler {
 	}
 
 	return Crawler{
-		//db:   db,
-		//meta: meta,
 		dir:  opt.Dir,
 		http: client,
 
 		rootUrl: opt.RootUrl,
 		urlCh:   make(chan string, opt.Limit*10),
-		indexCh: make(chan *Index, opt.Limit),
 		limit:   semaphore.NewWeighted(opt.Limit),
 	}
 }
@@ -72,9 +68,11 @@ func (c *Crawler) Crawl(ctx context.Context) error {
 		close(c.urlCh)
 	}()
 
+	crawlDone := make(chan struct{})
+
 	// For the HTTP loop
 	go func() {
-		defer close(c.indexCh)
+		defer func() { crawlDone <- struct{}{} }()
 
 		var count int
 		for url := range c.urlCh {
@@ -96,31 +94,14 @@ func (c *Crawler) Crawl(ctx context.Context) error {
 		}
 	}()
 
-	// For the DB loop
-	dbDone := make(chan struct{})
-	indexesDir := filepath.Join(c.dir, IndexesDir)
-	go func() {
-		defer func() { dbDone <- struct{}{} }()
-
-		for index := range c.indexCh {
-			fileName := fmt.Sprintf("%s.json", index.ArtifactID)
-			filePath := filepath.Join(indexesDir, index.GroupID, fileName)
-			if err := utils.WriteJSON(filePath, index); err != nil {
-				errCh <- err
-				return
-			}
-		}
-	}()
-
 loop:
 	for {
 		select {
 		// Wait for DB update to complete
-		case <-dbDone:
+		case <-crawlDone:
 			break loop
 		case err := <-errCh:
 			close(c.urlCh)
-			close(c.indexCh)
 			return err
 
 		}
@@ -196,14 +177,20 @@ func (c *Crawler) crawlSHA1(baseURL string, meta *Metadata) error {
 			versions = append(versions, v)
 		}
 	}
-	if len(versions) > 0 {
-		index := &Index{
-			GroupID:     meta.GroupID,
-			ArtifactID:  meta.ArtifactID,
-			Versions:    versions,
-			ArchiveType: JarType,
-		}
-		c.indexCh <- index
+	if len(versions) == 0 {
+		return nil
+	}
+
+	index := &Index{
+		GroupID:     meta.GroupID,
+		ArtifactID:  meta.ArtifactID,
+		Versions:    versions,
+		ArchiveType: JarType,
+	}
+	fileName := fmt.Sprintf("%s.json", index.ArtifactID)
+	filePath := filepath.Join(c.dir, index.GroupID, fileName)
+	if err := utils.WriteJSON(filePath, index); err != nil {
+		return xerrors.Errorf("json write error: %w", err)
 	}
 	return nil
 }
