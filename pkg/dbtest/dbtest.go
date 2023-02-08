@@ -2,7 +2,6 @@ package dbtest
 
 import (
 	"github.com/aquasecurity/trivy-java-db/pkg/crawler"
-	"github.com/aquasecurity/trivy-java-db/pkg/metadata"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -12,7 +11,7 @@ import (
 
 func InitDB(t *testing.T, indexes []*db.Index) (db.DB, error) {
 	tmpDir := t.TempDir()
-	dbc, err := db.New(tmpDir, metadata.Client{})
+	dbc, err := db.New(tmpDir)
 	require.NoError(t, err)
 
 	err = dbc.Init()
