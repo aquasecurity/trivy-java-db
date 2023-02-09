@@ -96,6 +96,9 @@ func (db *DB) VacuumDB() error {
 //////////////////////////////////////
 
 func (db *DB) InsertIndexes(indexes []types.Index) error {
+	if len(indexes) == 0 {
+		return nil
+	}
 	tx, err := db.client.Begin()
 	if err != nil {
 		return err

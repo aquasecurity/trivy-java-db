@@ -12,7 +12,7 @@ import (
 	"github.com/aquasecurity/trivy-java-db/pkg/crawler"
 )
 
-func TestCraw(t *testing.T) {
+func TestCrawl(t *testing.T) {
 	tests := []struct {
 		name       string
 		fileNames  map[string]string
@@ -48,9 +48,9 @@ func TestCraw(t *testing.T) {
 
 			tmpDir := t.TempDir()
 			cl := crawler.NewCrawler(crawler.Option{
-				RootUrl: ts.URL + "/maven2/",
-				Limit:   1,
-				Dir:     tmpDir,
+				RootUrl:  ts.URL + "/maven2/",
+				Limit:    1,
+				CacheDir: tmpDir,
 			})
 
 			err := cl.Crawl(context.Background())

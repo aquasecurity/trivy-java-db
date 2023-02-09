@@ -2,9 +2,8 @@ package db_test
 
 import (
 	"encoding/hex"
-	"github.com/aquasecurity/trivy-java-db/pkg/crawler"
-	"github.com/aquasecurity/trivy-java-db/pkg/db"
 	"github.com/aquasecurity/trivy-java-db/pkg/dbtest"
+	"github.com/aquasecurity/trivy-java-db/pkg/types"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"testing"
@@ -13,19 +12,19 @@ import (
 var (
 	jstlSha1b, _         = hex.DecodeString("9c581de633e94be1e7a955bd4e8292f16e554387")
 	javaxServletSha1b, _ = hex.DecodeString("bca201e52333629c59e459e874e5ecd8f9899e15")
-	indexJstl            = db.Index{
+	indexJstl            = types.Index{
 		GroupID:     "jstl",
 		ArtifactID:  "jstl",
 		Version:     "1.0",
 		SHA1:        jstlSha1b,
-		ArchiveType: crawler.JarType,
+		ArchiveType: types.JarType,
 	}
-	indexJavaxServlet = db.Index{
+	indexJavaxServlet = types.Index{
 		GroupID:     "javax.servlet",
 		ArtifactID:  "jstl",
 		Version:     "1.1.0",
 		SHA1:        javaxServletSha1b,
-		ArchiveType: crawler.JarType,
+		ArchiveType: types.JarType,
 	}
 )
 
@@ -33,7 +32,7 @@ func TestSelectIndexBySha1(t *testing.T) {
 	tests := []struct {
 		name      string
 		sha1      string
-		want      db.Index
+		want      types.Index
 		assertErr assert.ErrorAssertionFunc
 	}{
 		{
@@ -45,15 +44,15 @@ func TestSelectIndexBySha1(t *testing.T) {
 		{
 			name:      "wrong sha1",
 			sha1:      "1111111111111111111111111111111111111111",
-			want:      db.Index{},
+			want:      types.Index{},
 			assertErr: assert.NoError,
 		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			dbc, err := dbtest.InitDB(t, []*db.Index{
-				&indexJstl,
-				&indexJavaxServlet,
+			dbc, err := dbtest.InitDB(t, []types.Index{
+				indexJstl,
+				indexJavaxServlet,
 			})
 			require.NoError(t, err)
 
@@ -69,7 +68,7 @@ func TestSelectIndexByArtifactIDAndGroupID(t *testing.T) {
 		name       string
 		groupID    string
 		artifactID string
-		want       db.Index
+		want       types.Index
 		assertErr  assert.ErrorAssertionFunc
 	}{
 		{
@@ -83,22 +82,22 @@ func TestSelectIndexByArtifactIDAndGroupID(t *testing.T) {
 			name:       "wrong ArtifactID",
 			groupID:    "javax.servlet",
 			artifactID: "wrong",
-			want:       db.Index{},
+			want:       types.Index{},
 			assertErr:  assert.NoError,
 		},
 		{
 			name:       "wrong GroupID",
 			groupID:    "wrong",
 			artifactID: "jstl",
-			want:       db.Index{},
+			want:       types.Index{},
 			assertErr:  assert.NoError,
 		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			dbc, err := dbtest.InitDB(t, []*db.Index{
-				&indexJstl,
-				&indexJavaxServlet,
+			dbc, err := dbtest.InitDB(t, []types.Index{
+				indexJstl,
+				indexJavaxServlet,
 			})
 			require.NoError(t, err)
 
@@ -113,14 +112,14 @@ func TestSelectIndexesByArtifactIDAndFileType(t *testing.T) {
 	var tests = []struct {
 		name        string
 		artifactID  string
-		archiveType crawler.ArchiveType
-		want        []db.Index
+		archiveType types.ArchiveType
+		want        []types.Index
 	}{
 		{
 			name:        "happy path",
 			artifactID:  "jstl",
-			archiveType: crawler.JarType,
-			want: []db.Index{
+			archiveType: types.JarType,
+			want: []types.Index{
 				indexJstl,
 				indexJavaxServlet,
 			},
@@ -128,7 +127,7 @@ func TestSelectIndexesByArtifactIDAndFileType(t *testing.T) {
 		{
 			name:        "wrong ArtifactID",
 			artifactID:  "wrong",
-			archiveType: crawler.JarType,
+			archiveType: types.JarType,
 		},
 		{
 			name:        "wrong Type",
@@ -138,9 +137,9 @@ func TestSelectIndexesByArtifactIDAndFileType(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			dbc, err := dbtest.InitDB(t, []*db.Index{
-				&indexJstl,
-				&indexJavaxServlet,
+			dbc, err := dbtest.InitDB(t, []types.Index{
+				indexJstl,
+				indexJavaxServlet,
 			})
 			require.NoError(t, err)
 
