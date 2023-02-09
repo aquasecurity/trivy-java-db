@@ -76,14 +76,15 @@ func build() error {
 	if err := db.Reset(cacheDir); err != nil {
 		return xerrors.Errorf("db reset error: %w", err)
 	}
-	dbc, err := db.New(cacheDir)
+	dbDir := db.Dir(cacheDir)
+	dbc, err := db.New(dbDir)
 	if err != nil {
 		return xerrors.Errorf("db create error: %w", err)
 	}
 	if err = dbc.Init(); err != nil {
 		return xerrors.Errorf("db init error: %w", err)
 	}
-	meta := db.NewMetadata(cacheDir)
+	meta := db.NewMetadata(dbDir)
 	b := builder.NewBuilder(dbc, meta)
 	if err = b.Build(cacheDir); err != nil {
 		return xerrors.Errorf("db build error: %w", err)

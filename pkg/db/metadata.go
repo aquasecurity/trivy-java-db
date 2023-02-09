@@ -24,7 +24,7 @@ type Metadata struct {
 
 func NewMetadata(cacheDir string) Client {
 	return Client{
-		path: filepath.Join(dir(cacheDir), metadataFile),
+		path: filepath.Join(cacheDir, metadataFile),
 	}
 }
 

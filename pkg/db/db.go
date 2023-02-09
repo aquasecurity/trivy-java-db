@@ -24,12 +24,12 @@ type DB struct {
 	dir    string
 }
 
-func dir(cacheDir string) string {
+func Dir(cacheDir string) string {
 	return filepath.Join(cacheDir, "db")
 }
 
 func path(cacheDir string) string {
-	return filepath.Join(dir(cacheDir), dbFileName)
+	return filepath.Join(cacheDir, dbFileName)
 }
 
 func Reset(cacheDir string) error {
