@@ -2,11 +2,15 @@ package db_test
 
 import (
 	"encoding/hex"
-	"github.com/aquasecurity/trivy-java-db/pkg/dbtest"
-	"github.com/aquasecurity/trivy-java-db/pkg/types"
+	"testing"
+
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-	"testing"
+
+	"github.com/aquasecurity/trivy-java-db/pkg/dbtest"
+	"github.com/aquasecurity/trivy-java-db/pkg/types"
+
+	_ "modernc.org/sqlite"
 )
 
 var (
