@@ -40,6 +40,7 @@ func (b *Builder) Build(cacheDir string) error {
 		return xerrors.Errorf("count error: %w", err)
 	}
 	bar := pb.StartNew(count)
+	defer log.Println("Build completed")
 	defer bar.Finish()
 
 	var indexes []types.Index
@@ -51,7 +52,7 @@ func (b *Builder) Build(cacheDir string) error {
 		for _, ver := range index.Versions {
 			indexes = append(indexes, types.Index{
 				GroupID:     index.GroupID,
-				ArtifactID:  index.GroupID,
+				ArtifactID:  index.ArtifactID,
 				Version:     ver.Version,
 				SHA1:        ver.SHA1,
 				ArchiveType: index.ArchiveType,
@@ -70,6 +71,11 @@ func (b *Builder) Build(cacheDir string) error {
 		return xerrors.Errorf("walk error: %w", err)
 	}
 
+	// Insert the remaining indexes
+	if err = b.db.InsertIndexes(indexes); err != nil {
+		return xerrors.Errorf("failed to insert index to db: %w", err)
+	}
+
 	if err := b.db.VacuumDB(); err != nil {
 		return xerrors.Errorf("fauled to vacuum db: %w", err)
 	}
@@ -83,7 +89,6 @@ func (b *Builder) Build(cacheDir string) error {
 	if err := b.meta.Update(metaDB); err != nil {
 		return xerrors.Errorf("failed to update metadata: %w", err)
 	}
-	log.Println("Build completed")
 
 	return nil
 }
