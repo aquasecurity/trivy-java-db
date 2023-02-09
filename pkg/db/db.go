@@ -7,6 +7,7 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"golang.org/x/xerrors"
 
@@ -94,34 +95,47 @@ func (db *DB) VacuumDB() error {
 // functions to interaction with DB //
 //////////////////////////////////////
 
-func (db *DB) InsertIndex(index *types.Index) error {
+func (db *DB) InsertIndexes(indexes []types.Index) error {
 	tx, err := db.client.Begin()
 	if err != nil {
 		return err
 	}
 	defer tx.Rollback()
-	_, err = tx.Exec(`
-			INSERT INTO artifacts(group_id, artifact_id) 
-			VALUES (?, ?)  ON CONFLICT(group_id, artifact_id)
-			DO NOTHING`,
-		index.GroupID, index.ArtifactID)
-	if err != nil {
-		return xerrors.Errorf("unable to insert to 'artifacts' table: %w", err)
+
+	if err = db.insertArtifacts(tx, indexes); err != nil {
+		return xerrors.Errorf("insert error: %w", err)
 	}
 
-	_, err = tx.Exec(`
+	for _, index := range indexes {
+		_, err = tx.Exec(`
 			INSERT INTO indices(artifact_id, version, sha1, archive_type)
 			VALUES (
 			        (SELECT id FROM artifacts 
 			            WHERE group_id=? AND artifact_id=?), 
 			        ?, ?, ?
 			) ON CONFLICT(sha1) DO NOTHING`,
-		index.GroupID, index.ArtifactID, index.Version, index.SHA1, index.ArchiveType)
-	if err != nil {
-		return xerrors.Errorf("unable to insert to 'indices' table: %w", err)
+			index.GroupID, index.ArtifactID, index.Version, index.SHA1, index.ArchiveType)
+		if err != nil {
+			return xerrors.Errorf("unable to insert to 'indices' table: %w", err)
+		}
 	}
 
 	return tx.Commit()
+}
+
+func (db *DB) insertArtifacts(tx *sql.Tx, indexes []types.Index) error {
+	query := `INSERT OR IGNORE INTO artifacts(group_id, artifact_id) VALUES `
+	query += strings.Repeat("(?, ?), ", len(indexes))
+	query = strings.TrimSuffix(query, ", ")
+
+	var values []any
+	for _, index := range indexes {
+		values = append(values, index.GroupID, index.ArtifactID)
+	}
+	if _, err := tx.Exec(query, values...); err != nil {
+		return xerrors.Errorf("unable to insert to 'artifacts' table: %w", err)
+	}
+	return nil
 }
 
 func (db *DB) SelectIndexBySha1(sha1 string) (types.Index, error) {

@@ -3,6 +3,7 @@ package builder
 import (
 	"encoding/json"
 	"io"
+	"log"
 	"path/filepath"
 	"time"
 
@@ -41,23 +42,29 @@ func (b *Builder) Build(cacheDir string) error {
 	bar := pb.StartNew(count)
 	defer bar.Finish()
 
+	var indexes []types.Index
 	if err := fileutil.Walk(indexDir, func(r io.Reader, path string) error {
 		index := &crawler.Index{}
 		if err := json.NewDecoder(r).Decode(index); err != nil {
 			return xerrors.Errorf("failed to decode index: %w", err)
 		}
 		for _, ver := range index.Versions {
-			if err := b.db.InsertIndex(&types.Index{
+			indexes = append(indexes, types.Index{
 				GroupID:     index.GroupID,
 				ArtifactID:  index.GroupID,
 				Version:     ver.Version,
 				SHA1:        ver.SHA1,
 				ArchiveType: index.ArchiveType,
-			}); err != nil {
-				return xerrors.Errorf("failed to insert index to db: %w", err)
-			}
+			})
 		}
 		bar.Increment()
+
+		if len(indexes) > 1000 {
+			if err = b.db.InsertIndexes(indexes); err != nil {
+				return xerrors.Errorf("failed to insert index to db: %w", err)
+			}
+			indexes = []types.Index{}
+		}
 		return nil
 	}); err != nil {
 		return xerrors.Errorf("walk error: %w", err)
@@ -76,6 +83,7 @@ func (b *Builder) Build(cacheDir string) error {
 	if err := b.meta.Update(metaDB); err != nil {
 		return xerrors.Errorf("failed to update metadata: %w", err)
 	}
+	log.Println("Build completed")
 
 	return nil
 }

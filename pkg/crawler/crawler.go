@@ -111,6 +111,7 @@ loop:
 
 		}
 	}
+	log.Println("Crawl completed")
 	return nil
 }
 
