@@ -4,7 +4,6 @@ import (
 	"database/sql"
 	"encoding/hex"
 	"errors"
-	"log"
 	"os"
 	"path/filepath"
 	"strings"
@@ -24,10 +23,6 @@ type DB struct {
 	dir    string
 }
 
-func Dir(cacheDir string) string {
-	return filepath.Join(cacheDir, "db")
-}
-
 func path(cacheDir string) string {
 	return filepath.Join(cacheDir, dbFileName)
 }
@@ -42,7 +37,6 @@ func New(cacheDir string) (DB, error) {
 	if err := os.MkdirAll(dbDir, 0700); err != nil {
 		return DB{}, xerrors.Errorf("failed to mkdir: %w", err)
 	}
-	log.Printf("Database path: %s", dbPath)
 
 	// open db
 	var err error

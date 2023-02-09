@@ -76,7 +76,8 @@ func build() error {
 	if err := db.Reset(cacheDir); err != nil {
 		return xerrors.Errorf("db reset error: %w", err)
 	}
-	dbDir := db.Dir(cacheDir)
+	dbDir := filepath.Join(cacheDir, "db")
+	log.Printf("Database path: %s", dbDir)
 	dbc, err := db.New(dbDir)
 	if err != nil {
 		return xerrors.Errorf("db create error: %w", err)
