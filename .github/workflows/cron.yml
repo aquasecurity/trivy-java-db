@@ -7,6 +7,9 @@ on:
 env:
   GH_USER: aqua-bot
   DB_VERSION: 1
+permissions:
+  packages: write # for GHCR
+  contents: read
 jobs:
   build:
     name: Build DB
@@ -24,6 +27,9 @@ jobs:
       - name: Build the binary
         run: make build
 
+      - name: Crawl indexes
+        run: make db-crawl
+
       - name: Build database
         run: make db-build
 
@@ -31,7 +37,7 @@ jobs:
         run: make db-compress
 
       - name: Move DB
-        run: mv cache/trivy-java-db/javadb.tar.gz .
+        run: mv cache/db/javadb.tar.gz .
 
       - name: Login to GitHub Packages Container registry
         uses: docker/login-action@v1

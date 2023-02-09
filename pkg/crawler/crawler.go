@@ -2,11 +2,15 @@ package crawler
 
 import (
 	"context"
+	"encoding/hex"
 	"encoding/xml"
 	"fmt"
+	"github.com/aquasecurity/trivy-java-db/pkg/fileutil"
+	"github.com/aquasecurity/trivy-java-db/pkg/types"
 	"io"
 	"log"
 	"net/http"
+	"path/filepath"
 	"strings"
 	"sync"
 
@@ -14,34 +18,27 @@ import (
 	"github.com/hashicorp/go-retryablehttp"
 	"golang.org/x/sync/semaphore"
 	"golang.org/x/xerrors"
-	"k8s.io/utils/clock"
-
-	"github.com/aquasecurity/trivy-java-db/pkg/db"
-	"github.com/aquasecurity/trivy-java-db/pkg/metadata"
-	"github.com/aquasecurity/trivy-java-db/pkg/types"
 )
 
 const mavenRepoURL = "https://repo.maven.apache.org/maven2/"
 
 type Crawler struct {
-	db   db.DB
-	meta metadata.Client
+	dir  string
 	http *retryablehttp.Client
 
 	rootUrl string
 	wg      sync.WaitGroup
 	urlCh   chan string
-	indexCh chan *types.Index
 	limit   *semaphore.Weighted
-	clock   clock.Clock
 }
 
 type Option struct {
-	Limit   int64
-	RootUrl string
+	Limit    int64
+	RootUrl  string
+	CacheDir string
 }
 
-func NewCrawler(db db.DB, meta metadata.Client, opt Option) Crawler {
+func NewCrawler(opt Option) Crawler {
 	client := retryablehttp.NewClient()
 	client.Logger = nil
 
@@ -49,20 +46,21 @@ func NewCrawler(db db.DB, meta metadata.Client, opt Option) Crawler {
 		opt.RootUrl = mavenRepoURL
 	}
 
+	indexDir := filepath.Join(opt.CacheDir, "indexes")
+	log.Printf("Index dir %s", indexDir)
+
 	return Crawler{
-		db:   db,
-		meta: meta,
+		dir:  indexDir,
 		http: client,
 
 		rootUrl: opt.RootUrl,
 		urlCh:   make(chan string, opt.Limit*10),
-		indexCh: make(chan *types.Index, opt.Limit),
 		limit:   semaphore.NewWeighted(opt.Limit),
-		clock:   clock.RealClock{},
 	}
 }
 
 func (c *Crawler) Crawl(ctx context.Context) error {
+	log.Println("Crawl maven repository and save indexes")
 	errCh := make(chan error)
 	defer close(errCh)
 
@@ -75,9 +73,11 @@ func (c *Crawler) Crawl(ctx context.Context) error {
 		close(c.urlCh)
 	}()
 
+	crawlDone := make(chan struct{})
+
 	// For the HTTP loop
 	go func() {
-		defer close(c.indexCh)
+		defer func() { crawlDone <- struct{}{} }()
 
 		var count int
 		for url := range c.urlCh {
@@ -99,57 +99,19 @@ func (c *Crawler) Crawl(ctx context.Context) error {
 		}
 	}()
 
-	// For the DB loop
-	dbDone := make(chan struct{})
-	go func() {
-		defer func() { dbDone <- struct{}{} }()
-
-		var indexes []*types.Index
-		for index := range c.indexCh {
-			indexes = append(indexes, index)
-			if len(indexes)%1000 == 0 {
-				if err := c.db.InsertIndexes(indexes); err != nil {
-					errCh <- err
-					return
-				}
-				indexes = []*types.Index{} // clear array after saving to db
-			}
-		}
-		// Insert the remaining indexes
-		if err := c.db.InsertIndexes(indexes); err != nil {
-			errCh <- err
-			return
-		}
-	}()
-
 loop:
 	for {
 		select {
 		// Wait for DB update to complete
-		case <-dbDone:
+		case <-crawlDone:
 			break loop
 		case err := <-errCh:
 			close(c.urlCh)
-			close(c.indexCh)
 			return err
 
 		}
 	}
-
-	// save metadata
-	metaDB := metadata.Metadata{
-		Version:    db.SchemaVersion,
-		NextUpdate: c.clock.Now().UTC().Add(db.UpdateInterval),
-		UpdatedAt:  c.clock.Now().UTC(),
-	}
-
-	err := c.meta.Update(metaDB)
-	if err != nil {
-		close(c.indexCh)
-		close(c.urlCh)
-		return err
-	}
-
+	log.Println("Crawl completed")
 	return nil
 }
 
@@ -206,22 +168,35 @@ func (c *Crawler) Visit(url string) error {
 }
 
 func (c *Crawler) crawlSHA1(baseURL string, meta *Metadata) error {
+	var versions []Version
 	for _, version := range meta.Versioning.Versions {
 		sha1FileName := fmt.Sprintf("/%s-%s.jar.sha1", meta.ArtifactID, version)
 		sha1, err := c.fetchSHA1(baseURL + version + sha1FileName)
 		if err != nil {
 			return err
 		}
-		if sha1 != "" {
-			index := &types.Index{
-				GroupID:     meta.GroupID,
-				ArtifactID:  meta.ArtifactID,
-				Version:     version,
-				Sha1:        sha1,
-				ArchiveType: types.JarType,
+		if len(sha1) != 0 {
+			v := Version{
+				Version: version,
+				SHA1:    sha1,
 			}
-			c.indexCh <- index
+			versions = append(versions, v)
 		}
+	}
+	if len(versions) == 0 {
+		return nil
+	}
+
+	index := &Index{
+		GroupID:     meta.GroupID,
+		ArtifactID:  meta.ArtifactID,
+		Versions:    versions,
+		ArchiveType: types.JarType,
+	}
+	fileName := fmt.Sprintf("%s.json", index.ArtifactID)
+	filePath := filepath.Join(c.dir, index.GroupID, fileName)
+	if err := fileutil.WriteJSON(filePath, index); err != nil {
+		return xerrors.Errorf("json write error: %w", err)
 	}
 	return nil
 }
@@ -250,22 +225,40 @@ func (c *Crawler) parseMetadata(url string) (*Metadata, error) {
 	return &meta, nil
 }
 
-func (c *Crawler) fetchSHA1(url string) (string, error) {
+func (c *Crawler) fetchSHA1(url string) ([]byte, error) {
 	resp, err := c.http.Get(url)
 	// some projects don't have xxx.jar and xxx.jar.sha1 files
 	if resp.StatusCode == http.StatusNotFound {
-		return "", nil // TODO add special error for this
+		return nil, nil // TODO add special error for this
 	}
 	if err != nil {
-		return "", xerrors.Errorf("can't get sha1 from %s: %w", url, err)
+		return nil, xerrors.Errorf("can't get sha1 from %s: %w", url, err)
 	}
 	defer resp.Body.Close()
 
 	sha1, err := io.ReadAll(resp.Body)
 	if err != nil {
-		return "", xerrors.Errorf("can't read sha1 %s: %w", url, err)
+		return nil, xerrors.Errorf("can't read sha1 %s: %w", url, err)
 	}
-	// there are xxx.jar.sha1 files with additional data. Sha1 is always 1st word.
-	// e.g.https://repo.maven.apache.org/maven2/aspectj/aspectjrt/1.5.2a/aspectjrt-1.5.2a.jar.sha1
-	return strings.Split(strings.TrimSpace(string(sha1)), " ")[0], nil
+
+	// there are empty xxx.jar.sha1 files. Skip them.
+	// e.g. https://repo.maven.apache.org/maven2/org/wso2/msf4j/msf4j-swagger/2.5.2/msf4j-swagger-2.5.2.jar.sha1
+	// https://repo.maven.apache.org/maven2/org/wso2/carbon/analytics/org.wso2.carbon.permissions.rest.api/2.0.248/org.wso2.carbon.permissions.rest.api-2.0.248.jar.sha1
+	if len(sha1) == 0 {
+		return nil, nil
+	}
+	// there are xxx.jar.sha1 files with additional data. e.g.:
+	// https://repo.maven.apache.org/maven2/aspectj/aspectjrt/1.5.2a/aspectjrt-1.5.2a.jar.sha1
+	// https://repo.maven.apache.org/maven2/xerces/xercesImpl/2.9.0/xercesImpl-2.9.0.jar.sha1
+	var sha1b []byte
+	for _, s := range strings.Split(strings.TrimSpace(string(sha1)), " ") {
+		sha1b, err = hex.DecodeString(s)
+		if err == nil {
+			break
+		}
+	}
+	if len(sha1b) == 0 {
+		return nil, xerrors.Errorf("failed to decode sha1 %s: %w", url, err)
+	}
+	return sha1b, nil
 }

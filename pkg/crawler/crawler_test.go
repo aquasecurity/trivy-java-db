@@ -2,24 +2,22 @@ package crawler_test
 
 import (
 	"context"
+	"github.com/stretchr/testify/assert"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"testing"
-	"time"
-
-	"github.com/stretchr/testify/assert"
-	"github.com/stretchr/testify/require"
 
 	"github.com/aquasecurity/trivy-java-db/pkg/crawler"
-	"github.com/aquasecurity/trivy-java-db/pkg/dbtest"
-	"github.com/aquasecurity/trivy-java-db/pkg/metadata"
-	"github.com/aquasecurity/trivy-java-db/pkg/types"
 )
 
-func TestCraw(t *testing.T) {
+func TestCrawl(t *testing.T) {
 	tests := []struct {
-		name      string
-		fileNames map[string]string
+		name       string
+		fileNames  map[string]string
+		goldenPath string
+		filePath   string
 	}{
 		{
 			name: "happy path",
@@ -32,6 +30,8 @@ func TestCraw(t *testing.T) {
 				"/maven2/abbot/abbot/0.13.0/abbot-0.13.0.jar.sha1": "testdata/abbot-0.13.0.jar.sha1",
 				"/maven2/abbot/abbot/1.4.0/abbot-1.4.0.jar.sha1":   "testdata/abbot-1.4.0.jar.sha1",
 			},
+			goldenPath: "testdata/golden/abbot.json",
+			filePath:   "indexes/abbot/abbot.json",
 		},
 	}
 	for _, tt := range tests {
@@ -42,31 +42,27 @@ func TestCraw(t *testing.T) {
 					http.NotFound(w, r)
 					return
 				}
-				time.Sleep(time.Second) // Required to get time to save indexes to db
 				http.ServeFile(w, r, fileName)
 			}))
 			defer ts.Close()
 
-			db, err := dbtest.InitDB(t, nil)
-			assert.NoError(t, err)
-			meta := metadata.New(db.Dir())
-			cl := crawler.NewCrawler(db, meta, crawler.Option{
-				RootUrl: ts.URL + "/maven2/",
-				Limit:   1,
+			tmpDir := t.TempDir()
+			cl := crawler.NewCrawler(crawler.Option{
+				RootUrl:  ts.URL + "/maven2/",
+				Limit:    1,
+				CacheDir: tmpDir,
 			})
 
-			err = cl.Crawl(context.Background())
+			err := cl.Crawl(context.Background())
 			assert.NoError(t, err)
 
-			got, err := db.SelectIndexesByArtifactIDAndFileType("abbot", types.JarType)
-			require.NoError(t, err)
-			// indexes are saved by ticker
-			// in this test it happens that crawl does not save 1 index,
-			// so we just check that there are indexes in the database
-			// correctness of saving in the database / selection from the database is checked in = db tests
-			if len(got) == 0 {
-				t.Errorf("no index was saved in the database")
-			}
+			got, err := os.ReadFile(filepath.Join(tmpDir, tt.filePath))
+			assert.NoError(t, err)
+
+			want, err := os.ReadFile(tt.goldenPath)
+			assert.NoError(t, err)
+
+			assert.JSONEq(t, string(want), string(got))
 		})
 	}
 

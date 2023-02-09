@@ -6,12 +6,14 @@ const (
 	// types of files
 	JarType = "jar"
 	AarType = "aar"
+
+	IndexesDir = "indexes"
 )
 
 type Index struct {
 	GroupID     string
 	ArtifactID  string
 	Version     string
-	Sha1        string
+	SHA1        []byte
 	ArchiveType ArchiveType
 }

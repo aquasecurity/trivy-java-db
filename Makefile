@@ -11,15 +11,17 @@ build: trivy-java-db
 trivy-java-db: $(GO_SRCS)
 	go build $(LDFLAGS) ./cmd/trivy-java-db
 
-.PHONY: db-build
-db-build: cache/*
+.PHONY: db-crawl
+db-crawl: trivy-java-db
+	./trivy-java-db --cache-dir ./cache crawl
 
-cache/*: trivy-java-db
-	./trivy-java-db -cache-dir ./cache
+.PHONY: db-build
+db-build: trivy-java-db
+	./trivy-java-db --cache-dir ./cache build
 
 .PHONY: db-compress
 db-compress: cache/*
-	tar cvzf cache/trivy-java-db/javadb.tar.gz -C cache/trivy-java-db/ trivy-java.db metadata.json
+	tar cvzf cache/db/javadb.tar.gz -C cache/db/ trivy-java.db metadata.json
 
 .PHONY: clean
 clean:
