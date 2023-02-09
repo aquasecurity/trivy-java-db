@@ -1,4 +1,4 @@
-package metadata
+package db
 
 import (
 	"encoding/json"
@@ -12,7 +12,7 @@ import (
 const metadataFile = "metadata.json"
 
 type Client struct {
-	dir string
+	path string
 }
 
 type Metadata struct {
@@ -22,20 +22,15 @@ type Metadata struct {
 	DownloadedAt time.Time // This field will be filled after downloading.
 }
 
-// Path returns the metaData file path
-func Path(cacheDir string) string {
-	return filepath.Join(cacheDir, metadataFile)
-}
-
-func New(cacheDir string) Client {
+func NewMetadata(cacheDir string) Client {
 	return Client{
-		dir: Path(cacheDir),
+		path: filepath.Join(dir(cacheDir), metadataFile),
 	}
 }
 
 // Get returns the file metadata
 func (c *Client) Get() (Metadata, error) {
-	f, err := os.Open(c.dir)
+	f, err := os.Open(c.path)
 	if err != nil {
 		return Metadata{}, xerrors.Errorf("unable to open a file: %w", err)
 	}
@@ -49,11 +44,11 @@ func (c *Client) Get() (Metadata, error) {
 }
 
 func (c *Client) Update(meta Metadata) error {
-	if err := os.MkdirAll(filepath.Dir(c.dir), 0744); err != nil {
+	if err := os.MkdirAll(filepath.Dir(c.path), 0744); err != nil {
 		return xerrors.Errorf("mkdir error: %w", err)
 	}
 
-	f, err := os.Create(c.dir)
+	f, err := os.Create(c.path)
 	if err != nil {
 		return xerrors.Errorf("unable to open a file: %w", err)
 	}
@@ -67,7 +62,7 @@ func (c *Client) Update(meta Metadata) error {
 
 // Delete deletes the file of database metadata
 func (c *Client) Delete() error {
-	if err := os.Remove(c.dir); err != nil {
+	if err := os.Remove(c.path); err != nil {
 		return xerrors.Errorf("unable to remove the metadata file: %w", err)
 	}
 	return nil

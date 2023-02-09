@@ -1,4 +1,4 @@
-package utils
+package fileutil
 
 import (
 	"encoding/json"
@@ -10,7 +10,7 @@ import (
 	"path/filepath"
 )
 
-func FileWalk(root string, walkFn func(r io.Reader, path string) error) error {
+func Walk(root string, walkFn func(r io.Reader, path string) error) error {
 	if err := filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
 			return err
@@ -42,6 +42,19 @@ func FileWalk(root string, walkFn func(r io.Reader, path string) error) error {
 		return xerrors.Errorf("file walk error: %w", err)
 	}
 	return nil
+}
+
+// Count counts a number of files under the specified root directory.
+func Count(root string) (int, error) {
+	var count int
+	err := Walk(root, func(_ io.Reader, _ string) error {
+		count++
+		return nil
+	})
+	if err != nil {
+		return 0, xerrors.Errorf("file count error: %w", err)
+	}
+	return count, nil
 }
 
 func WriteJSON(filePath string, index interface{}) error {

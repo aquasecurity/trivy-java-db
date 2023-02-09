@@ -17,14 +17,14 @@ var (
 		GroupID:     "jstl",
 		ArtifactID:  "jstl",
 		Version:     "1.0",
-		Sha1:        jstlSha1b,
+		SHA1:        jstlSha1b,
 		ArchiveType: crawler.JarType,
 	}
 	indexJavaxServlet = db.Index{
 		GroupID:     "javax.servlet",
 		ArtifactID:  "jstl",
 		Version:     "1.1.0",
-		Sha1:        javaxServletSha1b,
+		SHA1:        javaxServletSha1b,
 		ArchiveType: crawler.JarType,
 	}
 )

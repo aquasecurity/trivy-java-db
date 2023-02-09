@@ -1,5 +1,7 @@
 package crawler
 
+import "github.com/aquasecurity/trivy-java-db/pkg/types"
+
 type Metadata struct {
 	GroupID    string     `xml:"groupId"`
 	ArtifactID string     `xml:"artifactId"`
@@ -13,23 +15,13 @@ type Versioning struct {
 	LastUpdated string   `xml:"lastUpdated"`
 }
 
-type ArchiveType string
-
-const (
-	// types of files
-	JarType = "jar"
-	AarType = "aar"
-
-	IndexesDir = "indexes"
-)
-
 type Index struct {
 	GroupID     string
 	ArtifactID  string
 	Versions    []Version
-	ArchiveType ArchiveType
+	ArchiveType types.ArchiveType
 }
 type Version struct {
 	Version string
-	Sha1    []byte
+	SHA1    []byte
 }

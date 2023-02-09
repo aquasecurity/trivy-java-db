@@ -9,9 +9,9 @@ import (
 	"github.com/spf13/cobra"
 	"golang.org/x/xerrors"
 
+	"github.com/aquasecurity/trivy-java-db/pkg/builder"
 	"github.com/aquasecurity/trivy-java-db/pkg/crawler"
 	"github.com/aquasecurity/trivy-java-db/pkg/db"
-	"github.com/aquasecurity/trivy-java-db/pkg/metadata"
 )
 
 func main() {
@@ -51,7 +51,8 @@ func init() {
 		log.Fatal(err)
 	}
 
-	rootCmd.PersistentFlags().StringVar(&cacheDir, "cache-dir", userCacheDir, "config file (default is $HOME/.cobra.yaml)")
+	rootCmd.PersistentFlags().StringVar(&cacheDir, "cache-dir", filepath.Join(userCacheDir, "trivy-java-db"),
+		"cache dir")
 	rootCmd.PersistentFlags().IntVar(&limit, "limit", 1000, "max parallelism")
 
 	rootCmd.AddCommand(crawlCmd)
@@ -59,11 +60,9 @@ func init() {
 }
 
 func crawl(ctx context.Context) error {
-	indexesDir := filepath.Join(cacheDir, "trivy-java-db", "indexes")
-	log.Printf("crawl maven repository and save indexes in %s", indexesDir)
 	c := crawler.NewCrawler(crawler.Option{
-		Limit: int64(limit),
-		Dir:   indexesDir,
+		Limit:    int64(limit),
+		CacheDir: cacheDir,
 	})
 	if err := c.Crawl(ctx); err != nil {
 		return xerrors.Errorf("crawl error: %w", err)
@@ -72,18 +71,20 @@ func crawl(ctx context.Context) error {
 }
 
 func build() error {
-	dbDir := filepath.Join(cacheDir, "trivy-java-db")
-	log.Printf("Database directory: %s", dbDir)
-	dbc, err := db.New(dbDir)
+	if err := db.Reset(cacheDir); err != nil {
+		return xerrors.Errorf("db reset error: %w", err)
+	}
+	dbc, err := db.New(cacheDir)
 	if err != nil {
 		return xerrors.Errorf("db create error: %w", err)
 	}
 	if err = dbc.Init(); err != nil {
 		return xerrors.Errorf("db init error: %w", err)
 	}
-	meta := metadata.New(dbDir)
-	if err = dbc.BuildDB(meta); err != nil {
-		return xerrors.Errorf("insert indexes to db error: %w", err)
+	meta := db.NewMetadata(cacheDir)
+	b := builder.NewBuilder(dbc, meta)
+	if err = b.Build(cacheDir); err != nil {
+		return xerrors.Errorf("db build error: %w", err)
 	}
 	return nil
 }

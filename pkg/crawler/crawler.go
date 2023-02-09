@@ -5,7 +5,8 @@ import (
 	"encoding/hex"
 	"encoding/xml"
 	"fmt"
-	"github.com/aquasecurity/trivy-java-db/pkg/utils"
+	"github.com/aquasecurity/trivy-java-db/pkg/fileutil"
+	"github.com/aquasecurity/trivy-java-db/pkg/types"
 	"io"
 	"log"
 	"net/http"
@@ -32,9 +33,9 @@ type Crawler struct {
 }
 
 type Option struct {
-	Limit   int64
-	RootUrl string
-	Dir     string
+	Limit    int64
+	RootUrl  string
+	CacheDir string
 }
 
 func NewCrawler(opt Option) Crawler {
@@ -45,8 +46,11 @@ func NewCrawler(opt Option) Crawler {
 		opt.RootUrl = mavenRepoURL
 	}
 
+	indexDir := filepath.Join(opt.CacheDir, "indexes")
+	log.Printf("Index dir %s", indexDir)
+
 	return Crawler{
-		dir:  opt.Dir,
+		dir:  indexDir,
 		http: client,
 
 		rootUrl: opt.RootUrl,
@@ -56,6 +60,7 @@ func NewCrawler(opt Option) Crawler {
 }
 
 func (c *Crawler) Crawl(ctx context.Context) error {
+	log.Println("Crawl maven repository and save indexes")
 	errCh := make(chan error)
 	defer close(errCh)
 
@@ -172,7 +177,7 @@ func (c *Crawler) crawlSHA1(baseURL string, meta *Metadata) error {
 		if len(sha1) != 0 {
 			v := Version{
 				Version: version,
-				Sha1:    sha1,
+				SHA1:    sha1,
 			}
 			versions = append(versions, v)
 		}
@@ -185,11 +190,11 @@ func (c *Crawler) crawlSHA1(baseURL string, meta *Metadata) error {
 		GroupID:     meta.GroupID,
 		ArtifactID:  meta.ArtifactID,
 		Versions:    versions,
-		ArchiveType: JarType,
+		ArchiveType: types.JarType,
 	}
 	fileName := fmt.Sprintf("%s.json", index.ArtifactID)
 	filePath := filepath.Join(c.dir, index.GroupID, fileName)
-	if err := utils.WriteJSON(filePath, index); err != nil {
+	if err := fileutil.WriteJSON(filePath, index); err != nil {
 		return xerrors.Errorf("json write error: %w", err)
 	}
 	return nil

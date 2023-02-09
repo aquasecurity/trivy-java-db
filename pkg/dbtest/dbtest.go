@@ -35,7 +35,7 @@ func convertIndexes(indexes []*db.Index) []*crawler.Index {
 			Versions: []crawler.Version{
 				{
 					Version: index.Version,
-					Sha1:    index.Sha1,
+					SHA1:    index.SHA1,
 				},
 			},
 		}
