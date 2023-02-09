@@ -83,6 +83,10 @@ func (db *DB) VacuumDB() error {
 	return nil
 }
 
+func (db *DB) Close() error {
+	return db.client.Close()
+}
+
 //////////////////////////////////////
 // functions to interaction with DB //
 //////////////////////////////////////
