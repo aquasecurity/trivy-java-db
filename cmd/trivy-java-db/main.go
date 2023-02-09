@@ -12,6 +12,8 @@ import (
 	"github.com/aquasecurity/trivy-java-db/pkg/builder"
 	"github.com/aquasecurity/trivy-java-db/pkg/crawler"
 	"github.com/aquasecurity/trivy-java-db/pkg/db"
+
+	_ "modernc.org/sqlite"
 )
 
 func main() {

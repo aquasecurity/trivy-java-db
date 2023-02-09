@@ -12,8 +12,6 @@ import (
 	"golang.org/x/xerrors"
 
 	"github.com/aquasecurity/trivy-java-db/pkg/types"
-
-	_ "modernc.org/sqlite"
 )
 
 const (
