@@ -7,6 +7,9 @@ on:
 env:
   GH_USER: aqua-bot
   DB_VERSION: 1
+permissions:
+  packages: write # for GHCR
+  contents: read
 jobs:
   build:
     name: Build DB
