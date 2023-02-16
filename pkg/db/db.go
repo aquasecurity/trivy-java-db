@@ -63,8 +63,11 @@ func (db *DB) Init() error {
 		return xerrors.Errorf("unable to create 'indices' table: %w", err)
 	}
 
-	if _, err := db.client.Exec("CREATE UNIQUE INDEX artifacts_idx ON artifacts(group_id, artifact_id)"); err != nil {
+	if _, err := db.client.Exec("CREATE UNIQUE INDEX artifacts_idx ON artifacts(artifact_id, group_id)"); err != nil {
 		return xerrors.Errorf("unable to create 'artifacts_idx' index: %w", err)
+	}
+	if _, err := db.client.Exec("CREATE INDEX indices_artifact_idx ON indices(artifact_id)"); err != nil {
+		return xerrors.Errorf("unable to create 'indices_artifact_idx' index: %w", err)
 	}
 	if _, err := db.client.Exec("CREATE UNIQUE INDEX indices_sha1_idx ON indices(sha1)"); err != nil {
 		return xerrors.Errorf("unable to create 'indices_sha1_idx' index: %w", err)
