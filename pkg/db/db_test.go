@@ -2,6 +2,7 @@ package db_test
 
 import (
 	"encoding/hex"
+	"sort"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -124,8 +125,8 @@ func TestSelectIndexesByArtifactIDAndFileType(t *testing.T) {
 			artifactID:  "jstl",
 			archiveType: types.JarType,
 			want: []types.Index{
-				indexJstl,
 				indexJavaxServlet,
+				indexJstl,
 			},
 		},
 		{
@@ -148,6 +149,10 @@ func TestSelectIndexesByArtifactIDAndFileType(t *testing.T) {
 			require.NoError(t, err)
 
 			got, err := dbc.SelectIndexesByArtifactIDAndFileType(tt.artifactID, tt.archiveType)
+			sort.Slice(got, func(i, j int) bool {
+				return got[i].GroupID < got[j].GroupID
+			})
+
 			require.NoError(t, err)
 			assert.Equal(t, tt.want, got)
 		})
