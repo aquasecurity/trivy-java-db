@@ -49,6 +49,9 @@ jobs:
       - name: Upload assets to GHCR
         run: |
           oras version
-          oras push --artifact-type application/vnd.aquasec.trivy.config.v1+json \
-          ghcr.io/${{ github.repository }}:${DB_VERSION} \
-          javadb.tar.gz:application/vnd.aquasec.trivy.javadb.layer.v1.tar+gzip
+          tags=(latest ${{ env.DB_VERSION }})
+          for tag in ${tags[@]}; do
+            oras push --artifact-type application/vnd.aquasec.trivy.config.v1+json \
+            ghcr.io/${{ github.repository }}:${tag} \
+            javadb.tar.gz:application/vnd.aquasec.trivy.javadb.layer.v1.tar+gzip
+          done
