@@ -5,7 +5,7 @@ on:
     - cron: "0 0 * * *" # update indexes every day in 00:00
   workflow_dispatch:
 env:
-  GH_USER: aqua-bot
+  GH_USER: nico-hen
   DB_VERSION: 1
 permissions:
   packages: write # for GHCR
