@@ -56,6 +56,7 @@ func (b *Builder) Build(cacheDir string) error {
 				Version:     ver.Version,
 				SHA1:        ver.SHA1,
 				ArchiveType: index.ArchiveType,
+				License:     ver.License,
 			})
 		}
 		bar.Increment()

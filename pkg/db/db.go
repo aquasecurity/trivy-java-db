@@ -59,7 +59,7 @@ func (db *DB) Init() error {
 	if _, err := db.client.Exec("CREATE TABLE artifacts(id INTEGER PRIMARY KEY, group_id TEXT, artifact_id TEXT)"); err != nil {
 		return xerrors.Errorf("unable to create 'artifacts' table: %w", err)
 	}
-	if _, err := db.client.Exec("CREATE TABLE indices(artifact_id INTEGER, version TEXT, sha1 BLOB, archive_type TEXT, foreign key (artifact_id) references artifacts(id))"); err != nil {
+	if _, err := db.client.Exec("CREATE TABLE indices(artifact_id INTEGER, version TEXT, sha1 BLOB, archive_type TEXT, license TEXT, foreign key (artifact_id) references artifacts(id))"); err != nil {
 		return xerrors.Errorf("unable to create 'indices' table: %w", err)
 	}
 
@@ -110,13 +110,13 @@ func (db *DB) InsertIndexes(indexes []types.Index) error {
 
 	for _, index := range indexes {
 		_, err = tx.Exec(`
-			INSERT INTO indices(artifact_id, version, sha1, archive_type)
+			INSERT INTO indices(artifact_id, version, sha1, archive_type, license)
 			VALUES (
 			        (SELECT id FROM artifacts 
 			            WHERE group_id=? AND artifact_id=?), 
-			        ?, ?, ?
+			        ?, ?, ?, ? 
 			) ON CONFLICT(sha1) DO NOTHING`,
-			index.GroupID, index.ArtifactID, index.Version, index.SHA1, index.ArchiveType)
+			index.GroupID, index.ArtifactID, index.Version, index.SHA1, index.ArchiveType, index.License)
 		if err != nil {
 			return xerrors.Errorf("unable to insert to 'indices' table: %w", err)
 		}
@@ -147,12 +147,12 @@ func (db *DB) SelectIndexBySha1(sha1 string) (types.Index, error) {
 		return index, xerrors.Errorf("sha1 decode error: %w", err)
 	}
 	row := db.client.QueryRow(`
-		SELECT a.group_id, a.artifact_id, i.version, i.sha1, i.archive_type 
+		SELECT a.group_id, a.artifact_id, i.version, i.sha1, i.archive_type, i.license
 		FROM indices i
 		JOIN artifacts a ON a.id = i.artifact_id
         WHERE i.sha1 = ?`,
 		sha1b)
-	err = row.Scan(&index.GroupID, &index.ArtifactID, &index.Version, &index.SHA1, &index.ArchiveType)
+	err = row.Scan(&index.GroupID, &index.ArtifactID, &index.Version, &index.SHA1, &index.ArchiveType, &index.License)
 	if err != nil && !errors.Is(err, sql.ErrNoRows) {
 		return index, xerrors.Errorf("select index error: %w", err)
 	}
@@ -162,12 +162,12 @@ func (db *DB) SelectIndexBySha1(sha1 string) (types.Index, error) {
 func (db *DB) SelectIndexByArtifactIDAndGroupID(artifactID, groupID string) (types.Index, error) {
 	var index types.Index
 	row := db.client.QueryRow(`
-		SELECT a.group_id, a.artifact_id, i.version, i.sha1, i.archive_type
+		SELECT a.group_id, a.artifact_id, i.version, i.sha1, i.archive_type, i.license
 		FROM indices i 
 		JOIN artifacts a ON a.id = i.artifact_id
         WHERE a.group_id = ? AND a.artifact_id = ?`,
 		groupID, artifactID)
-	err := row.Scan(&index.GroupID, &index.ArtifactID, &index.Version, &index.SHA1, &index.ArchiveType)
+	err := row.Scan(&index.GroupID, &index.ArtifactID, &index.Version, &index.SHA1, &index.ArchiveType, &index.License)
 	if err != nil && !errors.Is(err, sql.ErrNoRows) {
 		return index, xerrors.Errorf("select index error: %w", err)
 	}
@@ -178,7 +178,7 @@ func (db *DB) SelectIndexesByArtifactIDAndFileType(artifactID string, fileType t
 	error) {
 	var indexes []types.Index
 	rows, err := db.client.Query(`
-		SELECT a.group_id, a.artifact_id, i.version, i.sha1, i.archive_type
+		SELECT a.group_id, a.artifact_id, i.version, i.sha1, i.archive_type, i.license
 		FROM indices i 
 		JOIN artifacts a ON a.id = i.artifact_id
         WHERE a.artifact_id = ? AND i.archive_type = ?`,
@@ -188,7 +188,7 @@ func (db *DB) SelectIndexesByArtifactIDAndFileType(artifactID string, fileType t
 	}
 	for rows.Next() {
 		var index types.Index
-		if err = rows.Scan(&index.GroupID, &index.ArtifactID, &index.Version, &index.SHA1, &index.ArchiveType); err != nil {
+		if err = rows.Scan(&index.GroupID, &index.ArtifactID, &index.Version, &index.SHA1, &index.ArchiveType, &index.License); err != nil {
 			return nil, xerrors.Errorf("scan row error: %w", err)
 		}
 		indexes = append(indexes, index)

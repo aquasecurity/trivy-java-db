@@ -5,8 +5,6 @@ import (
 	"encoding/hex"
 	"encoding/xml"
 	"fmt"
-	"github.com/aquasecurity/trivy-java-db/pkg/fileutil"
-	"github.com/aquasecurity/trivy-java-db/pkg/types"
 	"io"
 	"log"
 	"net/http"
@@ -14,8 +12,13 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/aquasecurity/trivy-java-db/pkg/fileutil"
+	"github.com/aquasecurity/trivy-java-db/pkg/types"
+
 	"github.com/PuerkitoBio/goquery"
 	"github.com/hashicorp/go-retryablehttp"
+	"github.com/vifraa/gopom"
+	"golang.org/x/net/html/charset"
 	"golang.org/x/sync/semaphore"
 	"golang.org/x/xerrors"
 )
@@ -176,9 +179,19 @@ func (c *Crawler) crawlSHA1(baseURL string, meta *Metadata) error {
 			return err
 		}
 		if len(sha1) != 0 {
+			// fetch licenses
+			pomFileName := fmt.Sprintf("/%s-%s.pom", meta.ArtifactID, version)
+			pomURL := baseURL + version + pomFileName
+			pomLicense, err := c.fetchPOMLicense(pomURL)
+			if err != nil {
+				// TODO: Check if we can change this log to a warning or ignore it
+				log.Println(err)
+			}
+
 			v := Version{
 				Version: version,
 				SHA1:    sha1,
+				License: pomLicense,
 			}
 			versions = append(versions, v)
 		}
@@ -261,4 +274,36 @@ func (c *Crawler) fetchSHA1(url string) ([]byte, error) {
 		return nil, xerrors.Errorf("failed to decode sha1 %s: %w", url, err)
 	}
 	return sha1b, nil
+}
+
+func (c *Crawler) fetchPOMLicense(url string) (string, error) {
+	resp, err := c.http.Get(url)
+	if resp.StatusCode == http.StatusNotFound {
+		return "", nil
+	}
+	if err != nil {
+		return "", xerrors.Errorf("can't get pom xml from %s: %w", url, err)
+	}
+	defer resp.Body.Close()
+
+	var pomProject gopom.Project
+
+	decoder := xml.NewDecoder(resp.Body)
+	decoder.CharsetReader = charset.NewReaderLabel
+	err = decoder.Decode(&pomProject)
+
+	if err != nil {
+		return "", xerrors.Errorf("can't parse pom xml from %s: %w", url, err)
+	}
+
+	if len(pomProject.Licenses) == 0 {
+		return "", nil
+	}
+
+	var licenses []string
+	for _, l := range pomProject.Licenses {
+		licenses = append(licenses, l.Name)
+	}
+
+	return strings.Join(licenses, ","), nil
 }

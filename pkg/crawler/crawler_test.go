@@ -2,12 +2,13 @@ package crawler_test
 
 import (
 	"context"
-	"github.com/stretchr/testify/assert"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"testing"
+
+	"github.com/stretchr/testify/assert"
 
 	"github.com/aquasecurity/trivy-java-db/pkg/crawler"
 )
@@ -27,8 +28,11 @@ func TestCrawl(t *testing.T) {
 				"/maven2/abbot/abbot/":                   "testdata/abbot_abbot.html",
 				"/maven2/abbot/abbot/maven-metadata.xml": "testdata/maven-metadata.xml",
 				"/maven2/abbot/abbot/0.12.3/abbot-0.12.3.jar.sha1": "testdata/abbot-0.12.3.jar.sha1",
+				"/maven2/abbot/abbot/0.12.3/abbot-0.12.3.pom":      "testdata/abbot-0.12.3.pom",
 				"/maven2/abbot/abbot/0.13.0/abbot-0.13.0.jar.sha1": "testdata/abbot-0.13.0.jar.sha1",
+				"/maven2/abbot/abbot/0.13.0/abbot-0.13.0.pom":      "testdata/abbot-0.13.0.pom",
 				"/maven2/abbot/abbot/1.4.0/abbot-1.4.0.jar.sha1":   "testdata/abbot-1.4.0.jar.sha1",
+				"/maven2/abbot/abbot/1.4.0/abbot-1.4.0.pom":        "testdata/abbot-1.4.0.pom",
 			},
 			goldenPath: "testdata/golden/abbot.json",
 			filePath:   "indexes/abbot/abbot.json",

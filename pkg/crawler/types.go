@@ -24,4 +24,5 @@ type Index struct {
 type Version struct {
 	Version string
 	SHA1    []byte
+	License string
 }
