@@ -17,7 +17,6 @@ import (
 
 	"github.com/PuerkitoBio/goquery"
 	"github.com/hashicorp/go-retryablehttp"
-	"github.com/vifraa/gopom"
 	"golang.org/x/net/html/charset"
 	"golang.org/x/sync/semaphore"
 	"golang.org/x/xerrors"
@@ -286,7 +285,7 @@ func (c *Crawler) fetchPOMLicense(url string) (string, error) {
 	}
 	defer resp.Body.Close()
 
-	var pomProject gopom.Project
+	var pomProject PomProject
 
 	decoder := xml.NewDecoder(resp.Body)
 	decoder.CharsetReader = charset.NewReaderLabel
