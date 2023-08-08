@@ -305,5 +305,5 @@ func (c *Crawler) fetchPOMLicense(url string) (string, error) {
 	}
 
 	// TODO: Check if we can limit the length of license string i.e trim and save
-	return strings.Join(licenses, ","), nil
+	return strings.Join(licenses, "|"), nil
 }
