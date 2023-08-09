@@ -17,30 +17,39 @@ import (
 	"github.com/aquasecurity/trivy-java-db/pkg/db"
 	"github.com/aquasecurity/trivy-java-db/pkg/fileutil"
 	"github.com/aquasecurity/trivy-java-db/pkg/types"
-	cmap "github.com/orcaman/concurrent-map/v2"
 )
 
 const updateInterval = time.Hour * 72 // 3 days
 
 type Builder struct {
-	db              db.DB
-	meta            db.Client
-	clock           clock.Clock
-	filesLicenseMap cmap.ConcurrentMap[string, string] // cache information about license saved in licenses directory
+	db         db.DB
+	meta       db.Client
+	clock      clock.Clock
+	licenseMap map[string]string // license map
+
 }
 
 func NewBuilder(db db.DB, meta db.Client) Builder {
 	return Builder{
-		db:              db,
-		meta:            meta,
-		clock:           clock.RealClock{},
-		filesLicenseMap: cmap.New[string](),
+		db:         db,
+		meta:       meta,
+		clock:      clock.RealClock{},
+		licenseMap: make(map[string]string),
 	}
 }
 
 func (b *Builder) Build(cacheDir string) error {
 	indexDir := filepath.Join(cacheDir, types.IndexesDir)
 	licenseDir := filepath.Join(cacheDir, types.LicenseDir)
+
+	licenseFile, err := os.Open(licenseDir + "/normalized_license.json")
+	if err != nil {
+		xerrors.Errorf("failed to open normalized license file: %w", err)
+	}
+
+	if err := json.NewDecoder(licenseFile).Decode(&b.licenseMap); err != nil {
+		return xerrors.Errorf("failed to decode license file: %w", err)
+	}
 
 	count, err := fileutil.Count(indexDir)
 	if err != nil {
@@ -106,38 +115,18 @@ func (b *Builder) processLicenseInformationFromCache(license, licenseDir string)
 	var updatedLicenseList []string
 	// process license information
 	for _, l := range strings.Split(license, "|") {
-		if val, ok := b.filesLicenseMap.Get(l); ok {
+		if val, ok := b.licenseMap[l]; ok {
+			val = strings.TrimSpace(val)
 			updatedLicenseList = append(updatedLicenseList, val)
-			continue
 		}
-
-		// fetch license from file and update map
-		fileName := fileutil.GetLicenseFileName(licenseDir, l)
-		file, err := os.Open(fileName)
-		if err != nil {
-			continue
-		}
-
-		defer file.Close()
-
-		content, err := io.ReadAll(file)
-		if err != nil {
-			continue
-		}
-
-		contentString := strings.TrimSpace(string(content))
-
-		b.filesLicenseMap.Set(l, contentString)
-
-		updatedLicenseList = append(updatedLicenseList, contentString)
 	}
 
 	// precautionary check
-	// return first 30 characters if license string is too long
+	// return first 50 characters if license string is too long
 	result := strings.Join(updatedLicenseList, "|")
-	if len(result) > 30 {
+	if len(result) > 50 {
 		r := []rune(result)
-		return string(r[:30])
+		return string(r[:50])
 
 	}
 

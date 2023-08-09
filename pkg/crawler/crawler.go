@@ -407,14 +407,16 @@ func (c *Crawler) classifyLicense() error {
 		// update files with normalized license info
 		fileLicenseMap := c.filesLicenseMap.Items()
 
-		for key, license := range fileLicenseMap {
-			file, err := os.Create(key)
-			if err != nil {
-				continue
-			}
+		normalizedLicenseMap := make(map[string]string)
 
-			file.Write([]byte(license.NormalizedLicense))
-			defer file.Close()
+		for k, v := range fileLicenseMap {
+			os.Remove(k)
+			normalizedLicenseMap[v.LicenseKey] = v.NormalizedLicense
+		}
+
+		err := fileutil.WriteJSON(c.licensedir+"/normalized_license.json", normalizedLicenseMap)
+		if err != nil {
+			log.Println(err)
 		}
 	}()
 
@@ -422,10 +424,6 @@ func (c *Crawler) classifyLicense() error {
 }
 
 func (c *Crawler) prepareClassifierData() {
-	client := retryablehttp.NewClient()
-	client.RetryMax = 1
-	client.RetryWaitMax = 2 * time.Second
-
 	log.Println("Preparing license classifier data")
 
 	batchSize := 5
@@ -474,7 +472,7 @@ func (c *Crawler) prepareClassifierData() {
 				}
 
 				// download license url contents
-				resp, err := client.Get(licenseMeta.URL)
+				resp, err := c.http.Get(licenseMeta.URL)
 				if resp == nil {
 					// write the default license value i.e license name from POM to the file
 					f.Write([]byte(licenseMeta.NormalizedLicense))
