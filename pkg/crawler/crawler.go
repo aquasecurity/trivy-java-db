@@ -229,8 +229,8 @@ func (c *Crawler) crawlSHA1(baseURL string, meta *Metadata) error {
 			if err != nil {
 				log.Println(err)
 			}
-
 			licenseKeys = lo.Uniq(licenseKeys)
+			sort.Strings(licenseKeys)
 
 			v := Version{
 				Version: version,
