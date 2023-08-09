@@ -14,6 +14,14 @@
             <name>EPL</name>
             <url>https://www.eclipse.org/legal/epl-v10.html</url>
         </license>
+        <license>
+            <name>EPL</name>
+            <url>https://www.eclipse.org/legal/epl-v10.html</url>
+        </license>
+         <license>
+            <name>Random License</name>
+            <url>Invalid url</url>
+        </license>
     </licenses>
 
 

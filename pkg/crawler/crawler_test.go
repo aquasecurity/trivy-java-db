@@ -15,10 +15,14 @@ import (
 
 func TestCrawl(t *testing.T) {
 	tests := []struct {
-		name       string
-		fileNames  map[string]string
-		goldenPath string
-		filePath   string
+		name               string
+		fileNames          map[string]string
+		goldenPath         string
+		goldenLicensePath  string
+		goldenLicensePath2 string
+		filePath           string
+		licensePath        string
+		licensePath2       string
 	}{
 		{
 			name: "happy path",
@@ -34,8 +38,13 @@ func TestCrawl(t *testing.T) {
 				"/maven2/abbot/abbot/1.4.0/abbot-1.4.0.jar.sha1":   "testdata/abbot-1.4.0.jar.sha1",
 				"/maven2/abbot/abbot/1.4.0/abbot-1.4.0.pom":        "testdata/abbot-1.4.0.pom",
 			},
-			goldenPath: "testdata/golden/abbot.json",
-			filePath:   "indexes/abbot/abbot.json",
+			goldenPath:         "testdata/golden/abbot.json",
+			goldenLicensePath:  "testdata/golden/trivy_license_1028932157.txt",
+			goldenLicensePath2: "testdata/golden/trivy_license_1925279865.txt",
+
+			filePath:     "indexes/abbot/abbot.json",
+			licensePath:  "licenses/trivy_license_1028932157.txt",
+			licensePath2: "licenses/trivy_license_1925279865.txt",
 		},
 	}
 	for _, tt := range tests {
@@ -67,6 +76,22 @@ func TestCrawl(t *testing.T) {
 			assert.NoError(t, err)
 
 			assert.JSONEq(t, string(want), string(got))
+
+			// license file check
+			got, err = os.ReadFile(filepath.Join(tmpDir, tt.licensePath))
+			assert.NoError(t, err)
+
+			want, err = os.ReadFile(tt.goldenLicensePath)
+			assert.NoError(t, err)
+
+			// license file check2
+			got, err = os.ReadFile(filepath.Join(tmpDir, tt.licensePath2))
+			assert.NoError(t, err)
+
+			want, err = os.ReadFile(tt.goldenLicensePath2)
+			assert.NoError(t, err)
+
+			assert.Equal(t, string(want), string(got))
 		})
 	}
 
