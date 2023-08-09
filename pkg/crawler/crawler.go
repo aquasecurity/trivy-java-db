@@ -14,6 +14,7 @@ import (
 
 	"github.com/aquasecurity/trivy-java-db/pkg/fileutil"
 	"github.com/aquasecurity/trivy-java-db/pkg/types"
+	"github.com/samber/lo"
 
 	"github.com/PuerkitoBio/goquery"
 	"github.com/hashicorp/go-retryablehttp"
@@ -303,6 +304,8 @@ func (c *Crawler) fetchPOMLicense(url string) (string, error) {
 	for _, l := range pomProject.Licenses {
 		licenses = append(licenses, l.Name)
 	}
+
+	licenses = lo.Uniq(licenses)
 
 	// TODO: Check if we can limit the length of license string i.e trim and save
 	return strings.Join(licenses, "|"), nil
