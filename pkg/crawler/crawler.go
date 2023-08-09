@@ -76,7 +76,13 @@ func NewCrawler(opt Option) Crawler {
 	log.Printf("Index dir %s", indexDir)
 
 	licensedir := filepath.Join(opt.CacheDir, types.LicenseDir)
-	err := os.Mkdir(licensedir, os.ModePerm)
+
+	err := os.Mkdir(opt.CacheDir, os.ModePerm)
+	if err != nil {
+		log.Panicf("panic while creating license cache directory %s .Error:%s", opt.CacheDir, err)
+	}
+
+	err = os.Mkdir(licensedir, os.ModePerm)
 	if err != nil {
 		log.Panicf("panic while creating license cache directory %s .Error:%s", licensedir, err)
 	}
