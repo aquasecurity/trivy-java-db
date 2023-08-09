@@ -446,7 +446,7 @@ func (c *Crawler) prepareClassifierData() {
 				defer wg.Done()
 
 				// get license metadata
-				defaultVal, _ := c.uniqueLicenseKeys.Get(key)
+				licenseMeta, _ := c.uniqueLicenseKeys.Get(key)
 
 				// temporary license file name
 				file := fileutil.GetLicenseFileName(c.licensedir, key)
@@ -462,28 +462,28 @@ func (c *Crawler) prepareClassifierData() {
 
 				// if url not available then no point using the license classifier
 				// Names can be analyzed but in most cases license classifier does not result in any matches
-				if !strings.HasPrefix(defaultVal.URL, "http") {
+				if !strings.HasPrefix(licenseMeta.URL, "http") {
 					// write the default license value i.e license name from POM to the file
-					f.Write([]byte(defaultVal.NormalizedLicense))
+					f.Write([]byte(licenseMeta.NormalizedLicense))
 					return
 				}
 
 				// download license url contents
-				resp, err := http.Get(defaultVal.URL)
+				resp, err := http.Get(licenseMeta.URL)
 				if resp == nil {
 					// write the default license value i.e license name from POM to the file
-					f.Write([]byte(defaultVal.NormalizedLicense))
+					f.Write([]byte(licenseMeta.NormalizedLicense))
 					return
 				}
 
 				if resp.StatusCode == http.StatusNotFound {
 					// write the default license value i.e license name from POM to the file
-					f.Write([]byte(defaultVal.NormalizedLicense))
+					f.Write([]byte(licenseMeta.NormalizedLicense))
 					return
 				}
 				if err != nil {
 					// write the default license value i.e license name from POM to the file
-					f.Write([]byte(defaultVal.NormalizedLicense))
+					f.Write([]byte(licenseMeta.NormalizedLicense))
 					return
 				}
 				defer resp.Body.Close()
@@ -492,13 +492,13 @@ func (c *Crawler) prepareClassifierData() {
 				licenseText, err := io.ReadAll(resp.Body)
 				if err != nil {
 					// write the default license value i.e license name from POM to the file
-					f.Write([]byte(defaultVal.NormalizedLicense))
+					f.Write([]byte(licenseMeta.NormalizedLicense))
 					return
 				}
 				_, err = f.Write(licenseText)
 				if err != nil {
 					// write the default license value i.e license name from POM to the file
-					f.Write([]byte(defaultVal.NormalizedLicense))
+					f.Write([]byte(licenseMeta.NormalizedLicense))
 					return
 				}
 
@@ -506,7 +506,7 @@ func (c *Crawler) prepareClassifierData() {
 				c.files = append(c.files, file)
 
 				// update filesLicenseMap
-				c.filesLicenseMap.Set(file, defaultVal)
+				c.filesLicenseMap.Set(file, licenseMeta)
 			}(key)
 
 		}
