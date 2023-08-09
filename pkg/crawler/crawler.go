@@ -440,14 +440,12 @@ func (c *Crawler) prepareClassifierData() {
 
 	// process batches to created temporary license files
 	for batch := 0; batch < totalBatches; batch++ {
-		wg := sync.WaitGroup{}
 		keyBatch := c.uniqueLicenseKeys.Keys()[batch*batchSize : min((batch+1)*batchSize, len(c.uniqueLicenseKeys.Keys()))]
 
+		status := make(chan string, len(keyBatch))
+		keysProcessed := 0
 		for _, key := range keyBatch {
-			wg.Add(1)
 			go func(key string) {
-				// update wait group
-				defer wg.Done()
 
 				// get license metadata
 				licenseMeta, _ := c.uniqueLicenseKeys.Get(key)
@@ -459,6 +457,7 @@ func (c *Crawler) prepareClassifierData() {
 				f, err := os.Create(file)
 				if err != nil {
 					log.Println(err)
+					status <- "done"
 					return
 				}
 
@@ -469,6 +468,8 @@ func (c *Crawler) prepareClassifierData() {
 				if !strings.HasPrefix(licenseMeta.URL, "http") {
 					// write the default license value i.e license name from POM to the file
 					f.Write([]byte(licenseMeta.NormalizedLicense))
+					status <- "done"
+
 					return
 				}
 
@@ -477,17 +478,23 @@ func (c *Crawler) prepareClassifierData() {
 				if resp == nil {
 					// write the default license value i.e license name from POM to the file
 					f.Write([]byte(licenseMeta.NormalizedLicense))
+					status <- "done"
+
 					return
 				}
 
 				if resp.StatusCode == http.StatusNotFound {
 					// write the default license value i.e license name from POM to the file
 					f.Write([]byte(licenseMeta.NormalizedLicense))
+					status <- "done"
+
 					return
 				}
 				if err != nil {
 					// write the default license value i.e license name from POM to the file
 					f.Write([]byte(licenseMeta.NormalizedLicense))
+					status <- "done"
+
 					return
 				}
 				defer resp.Body.Close()
@@ -496,6 +503,8 @@ func (c *Crawler) prepareClassifierData() {
 				if err != nil {
 					// write the default license value i.e license name from POM to the file
 					f.Write([]byte(licenseMeta.NormalizedLicense))
+					status <- "done"
+
 					return
 				}
 
@@ -504,12 +513,22 @@ func (c *Crawler) prepareClassifierData() {
 
 				// update filesLicenseMap
 				c.filesLicenseMap.Set(file, licenseMeta)
+				status <- "done"
+
 			}(key)
 
 		}
 
 		// wait for batch to complete before proceeding
-		wg.Wait()
+		for keysProcessed < len(keyBatch) {
+			select {
+			case _ = <-status:
+				keysProcessed++
+			case <-time.After(10 * time.Second):
+				fmt.Println("prepareClassifierData timeout")
+				keysProcessed++
+			}
+		}
 
 		log.Printf("Total batches processed %d", batch+1)
 	}
