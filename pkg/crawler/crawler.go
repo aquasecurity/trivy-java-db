@@ -426,7 +426,7 @@ func (c *Crawler) classifyLicense() error {
 func (c *Crawler) prepareClassifierData() {
 	log.Println("Preparing license classifier data")
 
-	batchSize := 5
+	batchSize := 10
 	// batching for temporary licesene file creation
 	// batch size hardcoded as 10
 	totalBatches := len(c.uniqueLicenseKeys.Keys()) / batchSize
@@ -522,13 +522,13 @@ func (c *Crawler) prepareClassifierData() {
 			select {
 			case _ = <-status:
 				keysProcessed++
-			case <-time.After(10 * time.Second):
-				fmt.Println("prepareClassifierData timeout")
+			case <-time.After(20 * time.Second):
+				log.Println("prepareClassifierData timeout")
 				keysProcessed++
 			}
 		}
 
-		log.Printf("Total batches processed %d", batch+1)
+		log.Printf("Total batches processed %d/%d", batch+1, totalBatches)
 	}
 }
 
