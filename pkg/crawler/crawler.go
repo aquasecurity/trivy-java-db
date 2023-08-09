@@ -488,14 +488,7 @@ func (c *Crawler) prepareClassifierData() {
 				}
 				defer resp.Body.Close()
 
-				// parse and write contents to file
-				licenseText, err := io.ReadAll(resp.Body)
-				if err != nil {
-					// write the default license value i.e license name from POM to the file
-					f.Write([]byte(licenseMeta.NormalizedLicense))
-					return
-				}
-				_, err = f.Write(licenseText)
+				_, err = io.Copy(f, resp.Body)
 				if err != nil {
 					// write the default license value i.e license name from POM to the file
 					f.Write([]byte(licenseMeta.NormalizedLicense))
