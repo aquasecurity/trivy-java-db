@@ -8,7 +8,6 @@ require (
 	github.com/hashicorp/go-retryablehttp v0.7.2
 	github.com/spf13/cobra v1.6.1
 	github.com/stretchr/testify v1.8.1
-	github.com/vifraa/gopom v0.2.2
 	golang.org/x/net v0.0.0-20201021035429-f5854403a974
 	golang.org/x/sync v0.0.0-20201020160332-67f06af15bc9
 	golang.org/x/xerrors v0.0.0-20220907171357-04be3eba64a2
