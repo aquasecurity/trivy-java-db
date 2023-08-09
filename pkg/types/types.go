@@ -8,6 +8,7 @@ const (
 	AarType = "aar"
 
 	IndexesDir = "indexes"
+	LicenseDir = "licenses"
 )
 
 type Index struct {

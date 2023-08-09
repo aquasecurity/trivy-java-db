@@ -4,7 +4,9 @@ import (
 	"encoding/json"
 	"io"
 	"log"
+	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/cheggaaa/pb/v3"
@@ -15,26 +17,31 @@ import (
 	"github.com/aquasecurity/trivy-java-db/pkg/db"
 	"github.com/aquasecurity/trivy-java-db/pkg/fileutil"
 	"github.com/aquasecurity/trivy-java-db/pkg/types"
+	cmap "github.com/orcaman/concurrent-map/v2"
 )
 
 const updateInterval = time.Hour * 72 // 3 days
 
 type Builder struct {
-	db    db.DB
-	meta  db.Client
-	clock clock.Clock
+	db              db.DB
+	meta            db.Client
+	clock           clock.Clock
+	filesLicenseMap cmap.ConcurrentMap[string, string] // cache information about license saved licenses directory
 }
 
 func NewBuilder(db db.DB, meta db.Client) Builder {
 	return Builder{
-		db:    db,
-		meta:  meta,
-		clock: clock.RealClock{},
+		db:              db,
+		meta:            meta,
+		clock:           clock.RealClock{},
+		filesLicenseMap: cmap.New[string](),
 	}
 }
 
 func (b *Builder) Build(cacheDir string) error {
-	indexDir := filepath.Join(cacheDir, "indexes")
+	indexDir := filepath.Join(cacheDir, types.IndexesDir)
+	licenseDir := filepath.Join(cacheDir, types.LicenseDir)
+
 	count, err := fileutil.Count(indexDir)
 	if err != nil {
 		return xerrors.Errorf("count error: %w", err)
@@ -56,7 +63,7 @@ func (b *Builder) Build(cacheDir string) error {
 				Version:     ver.Version,
 				SHA1:        ver.SHA1,
 				ArchiveType: index.ArchiveType,
-				License:     ver.License,
+				License:     b.processLicenseInformationFromCache(ver.License, licenseDir),
 			})
 		}
 		bar.Increment()
@@ -92,4 +99,39 @@ func (b *Builder) Build(cacheDir string) error {
 	}
 
 	return nil
+}
+
+// processLicenseInformationFromCache : gets cached license information by license key and updates the records to be inserted
+func (b *Builder) processLicenseInformationFromCache(license, licenseDir string) string {
+	var updatedLicenseList []string
+	// process license information
+	for _, l := range strings.Split(license, "|") {
+		if val, ok := b.filesLicenseMap.Get(l); ok {
+			updatedLicenseList = append(updatedLicenseList, val)
+			continue
+		}
+
+		// fetch license from file and update map
+		fileName := fileutil.GetLicenseFileName(licenseDir, l)
+		file, err := os.Open(fileName)
+		if err != nil {
+			continue
+		}
+
+		defer file.Close()
+
+		content, err := io.ReadAll(file)
+		if err != nil {
+			continue
+		}
+
+		contentString := strings.TrimSpace(string(content))
+
+		b.filesLicenseMap.Set(l, contentString)
+
+		updatedLicenseList = append(updatedLicenseList, contentString)
+	}
+
+	return strings.Join(updatedLicenseList, "|")
+
 }

@@ -2,12 +2,13 @@ package fileutil
 
 import (
 	"encoding/json"
-	"golang.org/x/xerrors"
 	"io"
 	"io/fs"
 	"log"
 	"os"
 	"path/filepath"
+
+	"golang.org/x/xerrors"
 )
 
 func Walk(root string, walkFn func(r io.Reader, path string) error) error {
@@ -77,4 +78,8 @@ func WriteJSON(filePath string, index interface{}) error {
 		return xerrors.Errorf("failed to save a file: %w", err)
 	}
 	return nil
+}
+
+func GetLicenseFileName(dir, key string) string {
+	return dir + "/trivy_license_" + key + ".txt"
 }
