@@ -5,19 +5,25 @@ import (
 	"encoding/hex"
 	"encoding/xml"
 	"fmt"
+	"hash/fnv"
 	"io"
 	"log"
 	"net/http"
+	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/aquasecurity/trivy-java-db/pkg/fileutil"
 	"github.com/aquasecurity/trivy-java-db/pkg/types"
+	"github.com/google/licenseclassifier/v2/tools/identify_license/backend"
 	"github.com/samber/lo"
 
 	"github.com/PuerkitoBio/goquery"
 	"github.com/hashicorp/go-retryablehttp"
+	cmap "github.com/orcaman/concurrent-map/v2"
 	"golang.org/x/net/html/charset"
 	"golang.org/x/sync/semaphore"
 	"golang.org/x/xerrors"
@@ -33,6 +39,25 @@ type Crawler struct {
 	wg      sync.WaitGroup
 	urlCh   chan string
 	limit   *semaphore.Weighted
+	opt     Option
+
+	// map of unique license keys (hash of license url or name in POM) - license metadata
+	uniqueLicenseKeys cmap.ConcurrentMap[string, License]
+
+	// map of pom url to list of license keys
+	pomLicenseKeyMapping cmap.ConcurrentMap[string, []string]
+
+	// license classifier
+	classifier *backend.ClassifierBackend
+
+	// list of temporary license files
+	files []string
+
+	// map of temporary license files created to license metadata
+	filesLicenseMap cmap.ConcurrentMap[string, License]
+
+	// processed temporary license files tracking
+	processedFileMap map[string]struct{}
 }
 
 type Option struct {
@@ -52,18 +77,61 @@ func NewCrawler(opt Option) Crawler {
 	indexDir := filepath.Join(opt.CacheDir, "indexes")
 	log.Printf("Index dir %s", indexDir)
 
+	classifier, err := backend.New()
+	if err != nil {
+		log.Panic("panic backend")
+	}
+
 	return Crawler{
 		dir:  indexDir,
 		http: client,
 
-		rootUrl: opt.RootUrl,
-		urlCh:   make(chan string, opt.Limit*10),
-		limit:   semaphore.NewWeighted(opt.Limit),
+		rootUrl:              opt.RootUrl,
+		urlCh:                make(chan string, opt.Limit*10),
+		limit:                semaphore.NewWeighted(opt.Limit),
+		uniqueLicenseKeys:    cmap.New[License](),
+		pomLicenseKeyMapping: cmap.New[[]string](),
+		filesLicenseMap:      cmap.New[License](),
+		processedFileMap:     make(map[string]struct{}),
+		classifier:           classifier,
+		opt:                  opt,
 	}
 }
 
 func (c *Crawler) Crawl(ctx context.Context) error {
-	log.Println("Crawl maven repository and save indexes")
+	// crawl maven repository to fetch unique license keys (urls if present else names) from POMs
+	log.Println("crawl maven repository to fetch license attributes from POM")
+
+	if err := c.crawl(ctx, true); err != nil {
+		return err
+	}
+
+	log.Println("POM crawl complete")
+
+	log.Println("classify unique licenses identified")
+
+	// use license classifier for the unique license keys gathered
+	if err := c.classifyLicense(); err != nil {
+		return err
+	}
+
+	log.Println("license classification complete")
+
+	// reset channek and limits
+	// Crawl again to fetch GAV and update license information fetched earlier
+	c.urlCh = make(chan string, c.opt.Limit*10)
+	c.limit = semaphore.NewWeighted(c.opt.Limit)
+
+	log.Println("crawl maven repository and save indexes")
+
+	err := c.crawl(ctx, false)
+
+	log.Println("crawl complete")
+
+	return err
+}
+
+func (c *Crawler) crawl(ctx context.Context, crawlPOM bool) error {
 	errCh := make(chan error)
 	defer close(errCh)
 
@@ -95,7 +163,7 @@ func (c *Crawler) Crawl(ctx context.Context) error {
 			go func(url string) {
 				defer c.limit.Release(1)
 				defer c.wg.Done()
-				if err := c.Visit(url); err != nil {
+				if err := c.Visit(url, crawlPOM); err != nil {
 					errCh <- xerrors.Errorf("visit error: %w", err)
 				}
 			}(url)
@@ -118,7 +186,9 @@ loop:
 	return nil
 }
 
-func (c *Crawler) Visit(url string) error {
+// Visit : visits the maven urls.
+// crawlPOM flag controls which files to be analyzed. If true, only POM files are analyzed
+func (c *Crawler) Visit(url string, crawlPOM bool) error {
 	resp, err := c.http.Get(url)
 	if err != nil {
 		return xerrors.Errorf("http get error (%s): %w", url, err)
@@ -151,6 +221,12 @@ func (c *Crawler) Visit(url string) error {
 			return xerrors.Errorf("metadata parse error: %w", err)
 		}
 		if meta != nil {
+			// analyze only POM files and return
+			if crawlPOM {
+				return c.crawlPOM(url, meta)
+			}
+
+			// analyze GAV information
 			if err = c.crawlSHA1(url, meta); err != nil {
 				return err
 			}
@@ -179,20 +255,25 @@ func (c *Crawler) crawlSHA1(baseURL string, meta *Metadata) error {
 			return err
 		}
 		if len(sha1) != 0 {
-			// fetch licenses
-			pomFileName := fmt.Sprintf("/%s-%s.pom", meta.ArtifactID, version)
-			pomURL := baseURL + version + pomFileName
-			pomLicense, err := c.fetchPOMLicense(pomURL)
-			if err != nil {
-				// TODO: Check if we can change this log to a warning or ignore it
-				log.Println(err)
-			}
-
 			v := Version{
 				Version: version,
 				SHA1:    sha1,
-				License: pomLicense,
 			}
+
+			// fetch license information on the basis of pom url
+			pomURL := getPomURL(baseURL, meta.ArtifactID, version)
+			var licenses []string
+			if keys, ok := c.pomLicenseKeyMapping.Get(pomURL); ok {
+				for _, key := range keys {
+					if val, ok := c.uniqueLicenseKeys.Get(key); ok && len(val.NormalizedLicense) > 0 {
+						licenses = append(licenses, val.NormalizedLicense)
+					}
+				}
+
+				licenses = lo.Uniq(licenses)
+				v.License = strings.Join(licenses, "|")
+			}
+
 			versions = append(versions, v)
 		}
 	}
@@ -211,6 +292,18 @@ func (c *Crawler) crawlSHA1(baseURL string, meta *Metadata) error {
 	if err := fileutil.WriteJSON(filePath, index); err != nil {
 		return xerrors.Errorf("json write error: %w", err)
 	}
+	return nil
+}
+
+func (c *Crawler) crawlPOM(baseURL string, meta *Metadata) error {
+	for _, version := range meta.Versioning.Versions {
+		err := c.fetchAndSavePOMLicenseKeys(getPomURL(baseURL, meta.ArtifactID, version))
+		if err != nil {
+			// Not returning error since the error is triggered only if pom is invalid
+			log.Println(err)
+		}
+	}
+
 	return nil
 }
 
@@ -276,13 +369,13 @@ func (c *Crawler) fetchSHA1(url string) ([]byte, error) {
 	return sha1b, nil
 }
 
-func (c *Crawler) fetchPOMLicense(url string) (string, error) {
+func (c *Crawler) fetchAndSavePOMLicenseKeys(url string) error {
 	resp, err := c.http.Get(url)
 	if resp.StatusCode == http.StatusNotFound {
-		return "", nil
+		return nil
 	}
 	if err != nil {
-		return "", xerrors.Errorf("can't get pom xml from %s: %w", url, err)
+		return xerrors.Errorf("can't get pom xml from %s: %w", url, err)
 	}
 	defer resp.Body.Close()
 
@@ -293,20 +386,185 @@ func (c *Crawler) fetchPOMLicense(url string) (string, error) {
 	err = decoder.Decode(&pomProject)
 
 	if err != nil {
-		return "", xerrors.Errorf("can't parse pom xml from %s: %w", url, err)
+		return xerrors.Errorf("can't parse pom xml from %s: %w", url, err)
 	}
 
 	if len(pomProject.Licenses) == 0 {
-		return "", nil
+		return nil
 	}
 
-	var licenses []string
 	for _, l := range pomProject.Licenses {
-		licenses = append(licenses, l.Name)
+		key := getLicenseKey(l)
+
+		// default value
+		l.NormalizedLicense = l.Name
+		l.LicenseKey = key
+
+		// update uniqueLicenseKeys map
+		c.uniqueLicenseKeys.Set(key, l)
+
+		// update pomLicenseKeyMapping
+		if val, ok := c.pomLicenseKeyMapping.Get(url); ok {
+			val = append(val, key)
+			c.pomLicenseKeyMapping.Set(url, val)
+		} else {
+			c.pomLicenseKeyMapping.Set(url, []string{key})
+		}
 	}
 
-	licenses = lo.Uniq(licenses)
+	return nil
 
-	// TODO: Check if we can limit the length of license string i.e trim and save
-	return strings.Join(licenses, "|"), nil
+}
+
+func (c *Crawler) classifyLicense() error {
+
+	// prepare classifier data i.e create temporary files with license text to be used for classification
+	c.prepareClassifierData()
+
+	// classify licenses
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Hour)
+	defer cancel()
+	errs := c.classifier.ClassifyLicensesWithContext(ctx, 1000, c.files, true)
+	if len(errs) > 0 {
+		log.Println("errors ", errs)
+	}
+
+	// extract results
+	results := c.classifier.GetResults()
+	sort.Sort(results)
+
+	// process results to update the processedFileMap and uniqueLicenseKeys
+	if results.Len() > 0 {
+		for _, r := range results {
+			if _, ok := c.processedFileMap[r.Filename]; !ok {
+				if r.Confidence > 0.8 {
+					// mark file as processed
+					c.processedFileMap[r.Filename] = struct{}{}
+
+					// update uniqueLicenseKeys
+					licenseVal, _ := c.filesLicenseMap.Get(r.Filename)
+					licenseVal.NormalizedLicense = r.Name
+					c.uniqueLicenseKeys.Set(licenseVal.LicenseKey, licenseVal)
+				}
+
+				// cleanup file
+				os.Remove(r.Filename)
+			}
+		}
+	}
+
+	return nil
+}
+
+func (c *Crawler) prepareClassifierData() {
+	log.Println("preparing classifier data")
+
+	// batching for temporary licesene file creation
+	// batch size hardcoded as 10
+	totalBatches := len(c.uniqueLicenseKeys.Keys()) / 10
+	if len(c.uniqueLicenseKeys.Keys()) != 0 {
+		totalBatches = totalBatches + 1
+	}
+
+	log.Printf("total batches to be processed %d", totalBatches)
+
+	// process batches to created temporary license files
+	for batch := 0; batch < totalBatches; batch++ {
+		wg := sync.WaitGroup{}
+		keyBatch := c.uniqueLicenseKeys.Keys()[batch*10 : min((batch+1)*10, len(c.uniqueLicenseKeys.Keys()))]
+
+		for _, key := range keyBatch {
+			wg.Add(1)
+			go func(key string) {
+				// update wait group
+				defer wg.Done()
+
+				// get license metadata
+				defaultVal, _ := c.uniqueLicenseKeys.Get(key)
+
+				// if url not available then no point using the license classifier
+				// Names can be analyzed but in most cases license classifier does not result in any matches
+				if !strings.HasPrefix(defaultVal.URL, "http") {
+					return
+				}
+
+				// temporary license file name
+				file := "trivy_license_" + key + ".txt"
+
+				// create file
+				f, err := os.Create(file)
+				if err != nil {
+					return
+				}
+
+				defer f.Close()
+
+				// download license url contents
+				resp, err := http.Get(defaultVal.URL)
+				if resp == nil {
+					os.Remove(file)
+					return
+				}
+
+				if resp.StatusCode == http.StatusNotFound {
+					os.Remove(file)
+					return
+				}
+				if err != nil {
+					os.Remove(file)
+					return
+				}
+				defer resp.Body.Close()
+
+				// parse and write contents to file
+				licenseText, err := io.ReadAll(resp.Body)
+				if err != nil {
+					os.Remove(file)
+					return
+				}
+				_, err = f.Write(licenseText)
+				if err != nil {
+					os.Remove(file)
+					return
+				}
+
+				// update file list
+				c.files = append(c.files, file)
+
+				// update filesLicenseMap
+				c.filesLicenseMap.Set(file, defaultVal)
+			}(key)
+
+		}
+
+		// wait for batch to complete before proceeding
+		wg.Wait()
+
+		log.Printf("total batches processed %d", batch+1)
+	}
+}
+
+func getLicenseKey(l License) string {
+	if len(l.URL) > 0 && strings.HasPrefix(l.URL, "http") {
+		return hash(l.URL)
+	}
+	return hash(l.Name)
+}
+
+func getPomURL(baseURL, artifactID, version string) string {
+	pomFileName := fmt.Sprintf("/%s-%s.pom", artifactID, version)
+	return baseURL + version + pomFileName
+}
+
+func hash(s string) string {
+	h := fnv.New32a()
+	h.Write([]byte(s))
+	return fmt.Sprint(h.Sum32())
+}
+
+func min(a int, b int) int {
+	if a > b {
+		return b
+	}
+	return a
 }

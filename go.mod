@@ -5,7 +5,9 @@ go 1.18
 require (
 	github.com/PuerkitoBio/goquery v1.5.1
 	github.com/cheggaaa/pb/v3 v3.1.0
+	github.com/google/licenseclassifier/v2 v2.0.0
 	github.com/hashicorp/go-retryablehttp v0.7.2
+	github.com/orcaman/concurrent-map/v2 v2.0.1
 	github.com/samber/lo v1.38.1
 	github.com/spf13/cobra v1.6.1
 	github.com/stretchr/testify v1.8.1
@@ -32,6 +34,7 @@ require (
 	github.com/pmezard/go-difflib v1.0.0 // indirect
 	github.com/remyoudompheng/bigfft v0.0.0-20200410134404-eec4a21b6bb0 // indirect
 	github.com/rivo/uniseg v0.2.0 // indirect
+	github.com/sergi/go-diff v1.1.0 // indirect
 	github.com/spf13/pflag v1.0.5 // indirect
 	golang.org/x/exp v0.0.0-20220303212507-bbda1eaf7a17 // indirect
 	golang.org/x/mod v0.6.0-dev.0.20211013180041-c96bc1413d57 // indirect
