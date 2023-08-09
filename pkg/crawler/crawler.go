@@ -370,8 +370,8 @@ func (c *Crawler) classifyLicense() error {
 
 	// classify licenses
 
-	// 2 hours is the timeout for license classification process. The library doesn't seem to refer it currently though
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Hour)
+	// 1 minute is the timeout for license classification of a file
+	ctx, cancel := context.WithTimeout(context.Background(), 1*time.Minute)
 	defer cancel()
 
 	// 1000 is the number of concurrent tasks spawned to process license files
