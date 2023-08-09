@@ -422,9 +422,13 @@ func (c *Crawler) classifyLicense() error {
 }
 
 func (c *Crawler) prepareClassifierData() {
+	client := retryablehttp.NewClient()
+	client.RetryMax = 1
+	client.RetryWaitMax = 2 * time.Second
+
 	log.Println("Preparing license classifier data")
 
-	batchSize := 10
+	batchSize := 5
 	// batching for temporary licesene file creation
 	// batch size hardcoded as 10
 	totalBatches := len(c.uniqueLicenseKeys.Keys()) / batchSize
@@ -469,7 +473,7 @@ func (c *Crawler) prepareClassifierData() {
 				}
 
 				// download license url contents
-				resp, err := c.http.Get(licenseMeta.URL)
+				resp, err := client.Get(licenseMeta.URL)
 				if resp == nil {
 					// write the default license value i.e license name from POM to the file
 					f.Write([]byte(licenseMeta.NormalizedLicense))
