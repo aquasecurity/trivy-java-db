@@ -54,7 +54,7 @@ type Crawler struct {
 	// processed temporary license files tracking
 	processedFileMap map[string]struct{}
 
-	// uniqueLicenseKeys
+	// uniqueLicenseKeys : key is hash of license url or name in POM, whichever available
 	uniqueLicenseKeys cmap.ConcurrentMap[string, License]
 }
 

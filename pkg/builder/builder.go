@@ -132,6 +132,15 @@ func (b *Builder) processLicenseInformationFromCache(license, licenseDir string)
 		updatedLicenseList = append(updatedLicenseList, contentString)
 	}
 
-	return strings.Join(updatedLicenseList, "|")
+	// precautionary check
+	// return first 30 characters if license string is too long
+	result := strings.Join(updatedLicenseList, "|")
+	if len(result) > 30 {
+		r := []rune(result)
+		return string(r[:30])
+
+	}
+
+	return result
 
 }
