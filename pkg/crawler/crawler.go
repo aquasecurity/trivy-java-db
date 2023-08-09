@@ -424,9 +424,10 @@ func (c *Crawler) classifyLicense() error {
 func (c *Crawler) prepareClassifierData() {
 	log.Println("Preparing license classifier data")
 
+	batchSize := 10
 	// batching for temporary licesene file creation
 	// batch size hardcoded as 10
-	totalBatches := len(c.uniqueLicenseKeys.Keys()) / 10
+	totalBatches := len(c.uniqueLicenseKeys.Keys()) / batchSize
 	if len(c.uniqueLicenseKeys.Keys()) != 0 {
 		totalBatches = totalBatches + 1
 	}
@@ -436,7 +437,7 @@ func (c *Crawler) prepareClassifierData() {
 	// process batches to created temporary license files
 	for batch := 0; batch < totalBatches; batch++ {
 		wg := sync.WaitGroup{}
-		keyBatch := c.uniqueLicenseKeys.Keys()[batch*10 : min((batch+1)*10, len(c.uniqueLicenseKeys.Keys()))]
+		keyBatch := c.uniqueLicenseKeys.Keys()[batch*batchSize : min((batch+1)*batchSize, len(c.uniqueLicenseKeys.Keys()))]
 
 		for _, key := range keyBatch {
 			wg.Add(1)
