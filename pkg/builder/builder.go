@@ -26,7 +26,7 @@ type Builder struct {
 	db              db.DB
 	meta            db.Client
 	clock           clock.Clock
-	filesLicenseMap cmap.ConcurrentMap[string, string] // cache information about license saved licenses directory
+	filesLicenseMap cmap.ConcurrentMap[string, string] // cache information about license saved in licenses directory
 }
 
 func NewBuilder(db db.DB, meta db.Client) Builder {
