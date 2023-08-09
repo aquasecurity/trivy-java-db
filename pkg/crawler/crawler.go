@@ -469,7 +469,7 @@ func (c *Crawler) prepareClassifierData() {
 				}
 
 				// download license url contents
-				resp, err := http.Get(licenseMeta.URL)
+				resp, err := c.http.Get(licenseMeta.URL)
 				if resp == nil {
 					// write the default license value i.e license name from POM to the file
 					f.Write([]byte(licenseMeta.NormalizedLicense))
