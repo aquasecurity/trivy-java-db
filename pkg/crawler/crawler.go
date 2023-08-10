@@ -45,9 +45,6 @@ type Crawler struct {
 	// license classifier
 	classifier *backend.ClassifierBackend
 
-	// list of temporary license files
-	files []string
-
 	// map of temporary license files created to license metadata
 	filesLicenseMap cmap.ConcurrentMap[string, License]
 
@@ -366,7 +363,11 @@ func (c *Crawler) fetchAndSavePOMLicenseKeys(url string) ([]string, error) {
 func (c *Crawler) classifyLicense() error {
 
 	// prepare classifier data i.e create temporary files with license text to be used for classification
-	c.prepareClassifierData()
+	licenseFiles := c.prepareClassifierData()
+
+	if len(licenseFiles) == 0 {
+		return nil
+	}
 
 	// classify licenses
 
@@ -375,7 +376,7 @@ func (c *Crawler) classifyLicense() error {
 	defer cancel()
 
 	// 1000 is the number of concurrent tasks spawned to process license files
-	errs := c.classifier.ClassifyLicensesWithContext(ctx, 1000, c.files, true)
+	errs := c.classifier.ClassifyLicensesWithContext(ctx, 1000, licenseFiles, true)
 	if len(errs) > 0 {
 		log.Println("errors in license classification ", errs)
 	}
@@ -427,7 +428,9 @@ func (c *Crawler) classifyLicense() error {
 	return nil
 }
 
-func (c *Crawler) prepareClassifierData() {
+func (c *Crawler) prepareClassifierData() []string {
+	var licenseFiles []string
+
 	log.Println("Preparing license classifier data")
 
 	batchSize := 10
@@ -511,7 +514,7 @@ func (c *Crawler) prepareClassifierData() {
 				}
 
 				// update file list
-				c.files = append(c.files, file)
+				licenseFiles = append(licenseFiles, file)
 
 				// update filesLicenseMap
 				c.filesLicenseMap.Set(file, licenseMeta)
@@ -534,6 +537,8 @@ func (c *Crawler) prepareClassifierData() {
 
 		log.Printf("Total batches processed %d/%d", batch+1, totalBatches)
 	}
+
+	return licenseFiles
 }
 
 func getLicenseKey(l License) string {
