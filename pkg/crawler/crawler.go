@@ -390,15 +390,19 @@ func (c *Crawler) classifyLicense() error {
 			if _, ok := c.processedFileMap[r.Filename]; !ok {
 				licenseVal, _ := c.filesLicenseMap.Get(r.Filename)
 
-				// Pick results where confidence > 80%
-				if r.Confidence > 0.8 {
-					// mark file as processed
-					c.processedFileMap[r.Filename] = struct{}{}
-
-					// update uniqueLicenseKeys
-					licenseVal.NormalizedLicense = r.Name
-					c.filesLicenseMap.Set(r.Filename, licenseVal)
+				// since results are sorted, we can skip processing of data with confidence <80%
+				if r.Confidence < 0.8 {
+					break
 				}
+
+				// Pick results where confidence > 80%
+				// mark file as processed
+				c.processedFileMap[r.Filename] = struct{}{}
+
+				// update uniqueLicenseKeys
+				licenseVal.NormalizedLicense = r.Name
+				c.filesLicenseMap.Set(r.Filename, licenseVal)
+
 			}
 		}
 	}
