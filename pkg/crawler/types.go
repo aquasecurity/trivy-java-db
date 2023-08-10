@@ -38,8 +38,8 @@ type PomProject struct {
 }
 
 type License struct {
-	Name              string `xml:"name"`
-	URL               string `xml:"url"`
-	NormalizedLicense string
-	LicenseKey        string
+	Name                     string `xml:"name"`
+	URL                      string `xml:"url"`
+	LicenseKey               string
+	ClassificationConfidence float64
 }

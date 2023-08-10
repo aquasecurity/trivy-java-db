@@ -48,9 +48,6 @@ type Crawler struct {
 	// map of temporary license files created to license metadata
 	filesLicenseMap cmap.ConcurrentMap[string, License]
 
-	// processed temporary license files tracking
-	processedFileMap map[string]struct{}
-
 	// uniqueLicenseKeys : key is hash of license url or name in POM, whichever available
 	uniqueLicenseKeys cmap.ConcurrentMap[string, License]
 }
@@ -94,7 +91,6 @@ func NewCrawler(opt Option) Crawler {
 		urlCh:             make(chan string, opt.Limit*10),
 		limit:             semaphore.NewWeighted(opt.Limit),
 		filesLicenseMap:   cmap.New[License](),
-		processedFileMap:  make(map[string]struct{}),
 		classifier:        classifier,
 		opt:               opt,
 		uniqueLicenseKeys: cmap.New[License](),
@@ -346,8 +342,6 @@ func (c *Crawler) fetchAndSavePOMLicenseKeys(url string) ([]string, error) {
 	for _, l := range pomProject.Licenses {
 		key := getLicenseKey(l)
 
-		// default value
-		l.NormalizedLicense = l.Name
 		l.LicenseKey = key
 
 		// update uniqueLicenseKeys map
@@ -361,6 +355,7 @@ func (c *Crawler) fetchAndSavePOMLicenseKeys(url string) ([]string, error) {
 }
 
 func (c *Crawler) classifyLicense() error {
+	normalizedLicenseMap := make(map[string]string)
 
 	// prepare classifier data i.e create temporary files with license text to be used for classification
 	licenseFiles := c.prepareClassifierData()
@@ -385,38 +380,33 @@ func (c *Crawler) classifyLicense() error {
 	results := c.classifier.GetResults()
 	sort.Sort(results)
 
-	// process results to update the processedFileMap and filesLicenseMap
+	// process results to update the filesLicenseMap
 	if results.Len() > 0 {
 		for _, r := range results {
-			if _, ok := c.processedFileMap[r.Filename]; !ok {
-				licenseVal, _ := c.filesLicenseMap.Get(r.Filename)
-
-				// since results are sorted, we can skip processing of data with confidence <80%
-				if r.Confidence < 0.8 {
+			if licenseVal, ok := c.filesLicenseMap.Get(r.Filename); ok {
+				// since results are sorted, we can skip processing of data with confidence <90%
+				if r.Confidence < 0.9 {
 					break
 				}
 
-				// Pick results where confidence > 80%
-				// mark file as processed
-				c.processedFileMap[r.Filename] = struct{}{}
+				// skip processing since a higher confidence result is already processed
+				if licenseVal.ClassificationConfidence > r.Confidence {
+					continue
+				}
 
-				// update uniqueLicenseKeys
-				licenseVal.NormalizedLicense = r.Name
-				c.filesLicenseMap.Set(r.Filename, licenseVal)
-
+				// update normalized license map
+				normalizedLicenseMap[licenseVal.LicenseKey] = r.Name
 			}
 		}
 	}
 
 	defer func() {
-		// update files with normalized license info
-		fileLicenseMap := c.filesLicenseMap.Items()
-
-		normalizedLicenseMap := make(map[string]string)
-
-		for k, v := range fileLicenseMap {
-			os.Remove(k)
-			normalizedLicenseMap[v.LicenseKey] = v.NormalizedLicense
+		// update normalized license map for license keys which couldn't be classified or had no url in pom for classification
+		uniqLicenseKeys := c.uniqueLicenseKeys.Items()
+		for key, license := range uniqLicenseKeys {
+			if _, ok := normalizedLicenseMap[key]; !ok {
+				normalizedLicenseMap[key] = license.Name
+			}
 		}
 
 		err := fileutil.WriteJSON(c.licensedir+"/normalized_license.json", normalizedLicenseMap)
@@ -455,6 +445,13 @@ func (c *Crawler) prepareClassifierData() []string {
 				// get license metadata
 				licenseMeta, _ := c.uniqueLicenseKeys.Get(key)
 
+				// if url not available then no point using the license classifier
+				// Names can be analyzed but in most cases license classifier does not result in any matches
+				if !strings.HasPrefix(licenseMeta.URL, "http") {
+					status <- "done"
+					return
+				}
+
 				// temporary license file name
 				file := fileutil.GetLicenseFileName(c.licensedir, key)
 
@@ -468,36 +465,20 @@ func (c *Crawler) prepareClassifierData() []string {
 
 				defer f.Close()
 
-				// if url not available then no point using the license classifier
-				// Names can be analyzed but in most cases license classifier does not result in any matches
-				if !strings.HasPrefix(licenseMeta.URL, "http") {
-					// write the default license value i.e license name from POM to the file
-					f.Write([]byte(licenseMeta.NormalizedLicense))
-					status <- "done"
-
-					return
-				}
-
 				// download license url contents
 				resp, err := c.http.Get(licenseMeta.URL)
 				if resp == nil {
-					// write the default license value i.e license name from POM to the file
-					f.Write([]byte(licenseMeta.NormalizedLicense))
 					status <- "done"
 
 					return
 				}
 
 				if resp.StatusCode == http.StatusNotFound {
-					// write the default license value i.e license name from POM to the file
-					f.Write([]byte(licenseMeta.NormalizedLicense))
 					status <- "done"
 
 					return
 				}
 				if err != nil {
-					// write the default license value i.e license name from POM to the file
-					f.Write([]byte(licenseMeta.NormalizedLicense))
 					status <- "done"
 
 					return
@@ -506,8 +487,6 @@ func (c *Crawler) prepareClassifierData() []string {
 
 				_, err = io.Copy(f, resp.Body)
 				if err != nil {
-					// write the default license value i.e license name from POM to the file
-					f.Write([]byte(licenseMeta.NormalizedLicense))
 					status <- "done"
 
 					return
