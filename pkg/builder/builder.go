@@ -22,19 +22,16 @@ import (
 const updateInterval = time.Hour * 72 // 3 days
 
 type Builder struct {
-	db         db.DB
-	meta       db.Client
-	clock      clock.Clock
-	licenseMap map[string]string // license map
-
+	db    db.DB
+	meta  db.Client
+	clock clock.Clock
 }
 
 func NewBuilder(db db.DB, meta db.Client) Builder {
 	return Builder{
-		db:         db,
-		meta:       meta,
-		clock:      clock.RealClock{},
-		licenseMap: make(map[string]string),
+		db:    db,
+		meta:  meta,
+		clock: clock.RealClock{},
 	}
 }
 
@@ -47,7 +44,9 @@ func (b *Builder) Build(cacheDir string) error {
 		xerrors.Errorf("failed to open normalized license file: %w", err)
 	}
 
-	if err := json.NewDecoder(licenseFile).Decode(&b.licenseMap); err != nil {
+	licenseMap := make(map[string]string)
+
+	if err := json.NewDecoder(licenseFile).Decode(&licenseMap); err != nil {
 		return xerrors.Errorf("failed to decode license file: %w", err)
 	}
 
@@ -72,7 +71,7 @@ func (b *Builder) Build(cacheDir string) error {
 				Version:     ver.Version,
 				SHA1:        ver.SHA1,
 				ArchiveType: index.ArchiveType,
-				License:     b.processLicenseInformationFromCache(ver.License, licenseDir),
+				License:     b.processLicenseInformationFromCache(ver.License, licenseDir, licenseMap),
 			})
 		}
 		bar.Increment()
@@ -111,11 +110,11 @@ func (b *Builder) Build(cacheDir string) error {
 }
 
 // processLicenseInformationFromCache : gets cached license information by license key and updates the records to be inserted
-func (b *Builder) processLicenseInformationFromCache(license, licenseDir string) string {
+func (b *Builder) processLicenseInformationFromCache(license, licenseDir string, licenseMap map[string]string) string {
 	var updatedLicenseList []string
 	// process license information
 	for _, l := range strings.Split(license, "|") {
-		if val, ok := b.licenseMap[l]; ok {
+		if val, ok := licenseMap[l]; ok {
 			val = strings.TrimSpace(val)
 			updatedLicenseList = append(updatedLicenseList, val)
 		}
