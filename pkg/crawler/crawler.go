@@ -387,6 +387,8 @@ func (c *Crawler) classifyLicense() error {
 					continue
 				}
 
+				licenseVal.ClassificationConfidence = r.Confidence
+
 				// update normalized license map
 				normalizedLicenseMap[licenseVal.LicenseKey] = r.Name
 			}
