@@ -340,14 +340,12 @@ func (c *Crawler) fetchAndSavePOMLicenseKeys(url string) ([]string, error) {
 	}
 
 	for _, l := range pomProject.Licenses {
-		key := getLicenseKey(l)
-
-		l.LicenseKey = key
+		l.LicenseKey = getLicenseKey(l)
 
 		// update uniqueLicenseKeys map
-		c.uniqueLicenseKeys.Set(key, l)
+		c.uniqueLicenseKeys.Set(l.LicenseKey, l)
 
-		keys = append(keys, key)
+		keys = append(keys, l.LicenseKey)
 	}
 
 	return keys, nil
@@ -358,9 +356,9 @@ func (c *Crawler) classifyLicense() error {
 	normalizedLicenseMap := make(map[string]string)
 
 	// prepare classifier data i.e create temporary files with license text to be used for classification
-	licenseFiles := c.prepareClassifierData()
+	c.prepareClassifierData()
 
-	if len(licenseFiles) == 0 {
+	if len(c.filesLicenseMap.Keys()) == 0 {
 		return nil
 	}
 
@@ -371,7 +369,7 @@ func (c *Crawler) classifyLicense() error {
 	defer cancel()
 
 	// 1000 is the number of concurrent tasks spawned to process license files
-	errs := c.classifier.ClassifyLicensesWithContext(ctx, 1000, licenseFiles, true)
+	errs := c.classifier.ClassifyLicensesWithContext(ctx, 1000, c.filesLicenseMap.Keys(), true)
 	if len(errs) > 0 {
 		log.Println("errors in license classification ", errs)
 	}
@@ -418,9 +416,7 @@ func (c *Crawler) classifyLicense() error {
 	return nil
 }
 
-func (c *Crawler) prepareClassifierData() []string {
-	var licenseFiles []string
-
+func (c *Crawler) prepareClassifierData() {
 	log.Println("Preparing license classifier data")
 
 	batchSize := 10
@@ -488,9 +484,6 @@ func (c *Crawler) prepareClassifierData() []string {
 					return
 				}
 
-				// update file list
-				licenseFiles = append(licenseFiles, file)
-
 				// update filesLicenseMap
 				c.filesLicenseMap.Set(file, licenseMeta)
 				status <- "done"
@@ -512,8 +505,6 @@ func (c *Crawler) prepareClassifierData() []string {
 
 		log.Printf("Total batches processed %d/%d", batch+1, totalBatches)
 	}
-
-	return licenseFiles
 }
 
 func getLicenseKey(l License) string {
