@@ -373,7 +373,7 @@ func (c *Crawler) classifyLicense() error {
 	results := c.classifier.GetResults()
 	sort.Sort(results)
 
-	// process results to update the filesLicenseMap
+	// process results to update the normalizedLicenseMap
 	if results.Len() > 0 {
 		for _, r := range results {
 			if licenseVal, ok := filesLicenseMap.Get(r.Filename); ok {
