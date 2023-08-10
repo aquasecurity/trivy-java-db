@@ -7,8 +7,9 @@ const (
 	JarType = "jar"
 	AarType = "aar"
 
-	IndexesDir = "indexes"
-	LicenseDir = "licenses"
+	IndexesDir                = "indexes"
+	LicenseDir                = "licenses"
+	NormalizedlicenseFileName = "/normalized_license.json"
 )
 
 type Index struct {

@@ -42,7 +42,7 @@ func (b *Builder) Build(cacheDir string) error {
 	indexDir := filepath.Join(cacheDir, types.IndexesDir)
 	licenseDir := filepath.Join(cacheDir, types.LicenseDir)
 
-	licenseFile, err := os.Open(licenseDir + "/normalized_license.json")
+	licenseFile, err := os.Open(licenseDir + types.NormalizedlicenseFileName)
 	if err != nil {
 		xerrors.Errorf("failed to open normalized license file: %w", err)
 	}

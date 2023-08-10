@@ -409,7 +409,7 @@ func (c *Crawler) classifyLicense() error {
 			}
 		}
 
-		err := fileutil.WriteJSON(c.licensedir+"/normalized_license.json", normalizedLicenseMap)
+		err := fileutil.WriteJSON(c.licensedir+types.NormalizedlicenseFileName, normalizedLicenseMap)
 		if err != nil {
 			log.Println(err)
 		}
