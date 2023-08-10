@@ -20,6 +20,7 @@ import (
 )
 
 const updateInterval = time.Hour * 72 // 3 days
+const licenseStringLimit = 50
 
 type Builder struct {
 	db    db.DB
@@ -121,11 +122,13 @@ func (b *Builder) processLicenseInformationFromCache(license, licenseDir string,
 	}
 
 	// precautionary check
-	// return first 50 characters if license string is too long
+	// return first <licenseStringLimit> characters if license string is too long
 	result := strings.Join(updatedLicenseList, "|")
-	if len(result) > 50 {
+	if len(result) > licenseStringLimit {
 		r := []rune(result)
-		return string(r[:50])
+		if len(r) > licenseStringLimit {
+			return string(r[:licenseStringLimit])
+		}
 
 	}
 
