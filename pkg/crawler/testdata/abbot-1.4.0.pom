@@ -18,9 +18,13 @@
             <name>EPL</name>
             <url>https://www.eclipse.org/legal/epl-v10.html</url>
         </license>
-         <license>
-            <name>Random License</name>
+        <license>
+            <name>Random License with invalid URL in POM</name>
             <url>Invalid url</url>
+        </license>
+        <license>
+            <name>Random License without URL in POM</name>
+            <url></url>
         </license>
     </licenses>
 

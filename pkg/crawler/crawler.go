@@ -469,18 +469,15 @@ func (c *Crawler) prepareClassifierData() []string {
 				resp, err := c.http.Get(licenseMeta.URL)
 				if resp == nil {
 					status <- "done"
-
 					return
 				}
 
 				if resp.StatusCode == http.StatusNotFound {
 					status <- "done"
-
 					return
 				}
 				if err != nil {
 					status <- "done"
-
 					return
 				}
 				defer resp.Body.Close()
@@ -488,7 +485,6 @@ func (c *Crawler) prepareClassifierData() []string {
 				_, err = io.Copy(f, resp.Body)
 				if err != nil {
 					status <- "done"
-
 					return
 				}
 

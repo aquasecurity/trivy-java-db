@@ -15,12 +15,12 @@ import (
 
 func TestCrawl(t *testing.T) {
 	tests := []struct {
-		name              string
-		fileNames         map[string]string
-		goldenPath        string
-		goldenLicensePath string
-		filePath          string
-		licensePath       string
+		name                        string
+		fileNames                   map[string]string
+		goldenPath                  string
+		goldenNormalizedlicensePath string
+		filePath                    string
+		normalizedLicensePath       string
 	}{
 		{
 			name: "happy path",
@@ -36,11 +36,11 @@ func TestCrawl(t *testing.T) {
 				"/maven2/abbot/abbot/1.4.0/abbot-1.4.0.jar.sha1":   "testdata/abbot-1.4.0.jar.sha1",
 				"/maven2/abbot/abbot/1.4.0/abbot-1.4.0.pom":        "testdata/abbot-1.4.0.pom",
 			},
-			goldenPath:        "testdata/golden/abbot.json",
-			goldenLicensePath: "testdata/golden/trivy_license_1028932157.txt",
+			goldenPath:                  "testdata/golden/abbot.json",
+			goldenNormalizedlicensePath: "testdata/golden/normalized_license.json",
 
-			filePath:    "indexes/abbot/abbot.json",
-			licensePath: "licenses/trivy_license_1028932157.txt",
+			filePath:              "indexes/abbot/abbot.json",
+			normalizedLicensePath: "licenses/normalized_license.json",
 		},
 	}
 	for _, tt := range tests {
@@ -73,12 +73,15 @@ func TestCrawl(t *testing.T) {
 
 			assert.JSONEq(t, string(want), string(got))
 
-			// license file check
-			got, err = os.ReadFile(filepath.Join(tmpDir, tt.licensePath))
+			// normalized license json file check
+			got, err = os.ReadFile(filepath.Join(tmpDir, tt.normalizedLicensePath))
 			assert.NoError(t, err)
 
-			want, err = os.ReadFile(tt.goldenLicensePath)
+			want, err = os.ReadFile(tt.goldenNormalizedlicensePath)
 			assert.NoError(t, err)
+
+			assert.JSONEq(t, string(want), string(got))
+
 		})
 	}
 
