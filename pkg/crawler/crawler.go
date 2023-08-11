@@ -364,12 +364,12 @@ func (c *Crawler) classifyLicense(ctx context.Context) error {
 	files := make([]string, 0)
 	filesLicenseMap := make(map[string]License)
 
+	// change license file list to map
 	for _, data := range licenseFiles {
 		if _, ok := filesLicenseMap[data.FileName]; !ok {
 			filesLicenseMap[data.FileName] = data.License
 			files = append(files, data.FileName)
 		}
-
 	}
 
 	if len(filesLicenseMap) == 0 {
