@@ -563,7 +563,7 @@ func (c *Crawler) generateLicenseFile(client http.Client, licenseFileName string
 
 	_, err = io.Copy(f, resp.Body)
 	if err != nil {
-		return false, err
+		return false, nil
 	}
 
 	return true, nil
