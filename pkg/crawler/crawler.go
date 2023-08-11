@@ -442,6 +442,10 @@ func (c *Crawler) prepareClassifierData(ctx context.Context) ([]licenseFilesMeta
 	uniqLicenseKeyMap := c.uniqueLicenseKeys.Items()
 	uniqueLicenseKeyList := c.uniqueLicenseKeys.Keys()
 
+	client := http.Client{
+		Timeout: 10 * time.Second,
+	}
+
 	licenseKeyChannel := make(chan string, len(uniqueLicenseKeyList))
 
 	log.Printf("Total license keys to be processed %d", len(uniqueLicenseKeyList))
@@ -479,7 +483,7 @@ func (c *Crawler) prepareClassifierData(ctx context.Context) ([]licenseFilesMeta
 
 				licenseFileName := getLicenseFileName(c.licensedir, licenseKey)
 				licenseMeta := uniqLicenseKeyMap[licenseKey]
-				ok, err := c.generateLicenseFile(licenseFileName, licenseMeta)
+				ok, err := c.generateLicenseFile(client, licenseFileName, licenseMeta)
 				if err != nil {
 					errCh <- xerrors.Errorf("generateLicenseFile error: %w", err)
 				}
@@ -527,10 +531,7 @@ loop:
 
 }
 
-func (c *Crawler) generateLicenseFile(licenseFileName string, licenseMeta License) (bool, error) {
-	client := http.Client{
-		Timeout: 10 * time.Second,
-	}
+func (c *Crawler) generateLicenseFile(client http.Client, licenseFileName string, licenseMeta License) (bool, error) {
 
 	// if url not available then no point using the license classifier
 	// Names can be analyzed but in most cases license classifier does not result in any matches
