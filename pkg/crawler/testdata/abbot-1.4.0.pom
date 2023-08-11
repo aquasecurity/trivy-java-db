@@ -26,6 +26,10 @@
             <name>Random License without URL in POM</name>
             <url></url>
         </license>
+        <license>
+            <name></name>
+            <url>Invalid license url with missing license name</url>
+        </license>
     </licenses>
 
 

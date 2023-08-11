@@ -420,7 +420,9 @@ func (c *Crawler) classifyLicense(ctx context.Context) error {
 		uniqLicenseKeys := c.uniqueLicenseKeys.Items()
 		for key, license := range uniqLicenseKeys {
 			if _, ok := normalizedLicenseMap[key]; !ok {
-				normalizedLicenseMap[key] = license.Name
+				if len(license.Name) > 0 {
+					normalizedLicenseMap[key] = license.Name
+				}
 			}
 		}
 
