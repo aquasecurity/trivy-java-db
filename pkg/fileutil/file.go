@@ -79,7 +79,3 @@ func WriteJSON(filePath string, index interface{}) error {
 	}
 	return nil
 }
-
-func GetLicenseFileName(dir, key string) string {
-	return dir + "/trivy_license_" + key + ".txt"
-}

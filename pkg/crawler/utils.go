@@ -30,3 +30,7 @@ func min(a int, b int) int {
 	}
 	return a
 }
+
+func getLicenseFileName(dir, key string) string {
+	return dir + "/trivy_license_" + key + ".txt"
+}

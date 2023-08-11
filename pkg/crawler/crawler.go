@@ -54,6 +54,11 @@ type Option struct {
 	CacheDir string
 }
 
+type licenseFilesMeta struct {
+	FileName string
+	License
+}
+
 func NewCrawler(opt Option) Crawler {
 	client := retryablehttp.NewClient()
 	client.Logger = nil
@@ -148,7 +153,7 @@ loop:
 	log.Println("Crawl completed")
 
 	// fetch license information
-	return c.classifyLicense()
+	return c.classifyLicense(ctx)
 }
 
 // Visit : visits the maven urls.
@@ -347,13 +352,27 @@ func (c *Crawler) fetchAndSavePOMLicenseKeys(url string) ([]string, error) {
 
 }
 
-func (c *Crawler) classifyLicense() error {
+func (c *Crawler) classifyLicense(ctx context.Context) error {
 	normalizedLicenseMap := make(map[string]string)
 
 	// prepare classifier data i.e create temporary files with license text to be used for classification
-	filesLicenseMap := c.prepareClassifierData()
+	licenseFiles, err := c.prepareClassifierData(ctx)
+	if err != nil {
+		return err
+	}
 
-	if len(filesLicenseMap.Keys()) == 0 {
+	files := make([]string, 0)
+	filesLicenseMap := make(map[string]License)
+
+	for _, data := range licenseFiles {
+		if _, ok := filesLicenseMap[data.FileName]; !ok {
+			filesLicenseMap[data.FileName] = data.License
+			files = append(files, data.FileName)
+		}
+
+	}
+
+	if len(filesLicenseMap) == 0 {
 		return nil
 	}
 
@@ -363,8 +382,8 @@ func (c *Crawler) classifyLicense() error {
 	ctx, cancel := context.WithTimeout(context.Background(), 1*time.Minute)
 	defer cancel()
 
-	// 1000 is the number of concurrent tasks spawned to process license files
-	errs := c.classifier.ClassifyLicensesWithContext(ctx, 1000, filesLicenseMap.Keys(), true)
+	// c.opt.Limit is the number of concurrent tasks spawned to process license files
+	errs := c.classifier.ClassifyLicensesWithContext(ctx, int(c.opt.Limit), files, true)
 	if len(errs) > 0 {
 		log.Println("errors in license classification ", errs)
 	}
@@ -376,7 +395,7 @@ func (c *Crawler) classifyLicense() error {
 	// process results to update the normalizedLicenseMap
 	if results.Len() > 0 {
 		for _, r := range results {
-			if licenseVal, ok := filesLicenseMap.Get(r.Filename); ok {
+			if licenseVal, ok := filesLicenseMap[r.Filename]; ok {
 				// since results are sorted, we can skip processing of data with confidence <90%
 				if r.Confidence < 0.9 {
 					break
@@ -388,7 +407,7 @@ func (c *Crawler) classifyLicense() error {
 				}
 
 				licenseVal.ClassificationConfidence = r.Confidence
-				filesLicenseMap.Set(r.Filename, licenseVal)
+				filesLicenseMap[r.Filename] = licenseVal
 
 				// update normalized license map
 				normalizedLicenseMap[licenseVal.LicenseKey] = r.Name
@@ -414,98 +433,137 @@ func (c *Crawler) classifyLicense() error {
 	return nil
 }
 
-func (c *Crawler) prepareClassifierData() cmap.ConcurrentMap[string, License] {
-
-	filesLicenseMap := cmap.New[License]()
-
+func (c *Crawler) prepareClassifierData(ctx context.Context) ([]licenseFilesMeta, error) {
 	log.Println("Preparing license classifier data")
 
-	batchSize := 10
-	// batching for temporary licesene file creation
-	// batch size hardcoded as 10
-	totalBatches := len(c.uniqueLicenseKeys.Keys()) / batchSize
-	if len(c.uniqueLicenseKeys.Keys()) != 0 {
-		totalBatches = totalBatches + 1
+	var licenseFiles []licenseFilesMeta
+
+	// switch from concurrent to normal map
+	uniqLicenseKeyMap := c.uniqueLicenseKeys.Items()
+	uniqueLicenseKeyList := c.uniqueLicenseKeys.Keys()
+
+	licenseKeyChannel := make(chan string, len(uniqueLicenseKeyList))
+
+	log.Printf("Total license keys to be processed %d", len(uniqueLicenseKeyList))
+
+	// dump license keys to the channel so that they can be processed
+	for _, key := range uniqueLicenseKeyList {
+		licenseKeyChannel <- key
 	}
 
-	log.Printf("Total batches to be processed %d", totalBatches)
+	limit := semaphore.NewWeighted(c.opt.Limit)
 
-	// process batches to created temporary license files
-	for batch := 0; batch < totalBatches; batch++ {
-		keyBatch := c.uniqueLicenseKeys.Keys()[batch*batchSize : min((batch+1)*batchSize, len(c.uniqueLicenseKeys.Keys()))]
+	// error channel
+	errCh := make(chan error)
+	defer close(errCh)
 
-		status := make(chan string, len(keyBatch))
-		keysProcessed := 0
-		for _, key := range keyBatch {
-			go func(key string) {
+	// status channel to track processing of license keys
+	type status struct {
+		Meta licenseFilesMeta
+		Done bool
+	}
+	prepStatus := make(chan status, len(uniqueLicenseKeyList))
+	defer close(prepStatus)
 
-				// get license metadata
-				licenseMeta, _ := c.uniqueLicenseKeys.Get(key)
+	// process license keys channel
+	go func() {
+		for licenseKey := range licenseKeyChannel {
 
-				// if url not available then no point using the license classifier
-				// Names can be analyzed but in most cases license classifier does not result in any matches
-				if !strings.HasPrefix(licenseMeta.URL, "http") {
-					status <- "done"
-					return
-				}
-
-				// temporary license file name
-				file := fileutil.GetLicenseFileName(c.licensedir, key)
-
-				// create file
-				f, err := os.Create(file)
-				if err != nil {
-					log.Println(err)
-					status <- "done"
-					return
-				}
-
-				defer f.Close()
-
-				// download license url contents
-				resp, err := c.http.Get(licenseMeta.URL)
-				if resp == nil {
-					status <- "done"
-					return
-				}
-
-				if resp.StatusCode == http.StatusNotFound {
-					status <- "done"
-					return
-				}
-				if err != nil {
-					status <- "done"
-					return
-				}
-				defer resp.Body.Close()
-
-				_, err = io.Copy(f, resp.Body)
-				if err != nil {
-					status <- "done"
-					return
-				}
-
-				// update filesLicenseMap
-				filesLicenseMap.Set(file, licenseMeta)
-				status <- "done"
-
-			}(key)
-
-		}
-
-		// wait for batch to complete before proceeding
-		for keysProcessed < len(keyBatch) {
-			select {
-			case _ = <-status:
-				keysProcessed++
-			case <-time.After(20 * time.Second):
-				log.Println("prepareClassifierData timeout")
-				keysProcessed++
+			if err := limit.Acquire(ctx, 1); err != nil {
+				errCh <- xerrors.Errorf("semaphore acquire error: %w", err)
 			}
-		}
 
-		log.Printf("Total batches processed %d/%d", batch+1, totalBatches)
+			// process license key to generate license file
+			go func(licenseKey string) {
+				defer limit.Release(1)
+
+				licenseFileName := getLicenseFileName(c.licensedir, licenseKey)
+				licenseMeta := uniqLicenseKeyMap[licenseKey]
+				ok, err := c.generateLicenseFile(licenseFileName, licenseMeta)
+				if err != nil {
+					errCh <- xerrors.Errorf("generateLicenseFile error: %w", err)
+				}
+
+				// update status post processing of license key
+				prepStatus <- status{
+					Done: ok,
+					Meta: licenseFilesMeta{
+						License:  licenseMeta,
+						FileName: licenseFileName,
+					},
+				}
+			}(licenseKey)
+		}
+	}()
+
+	count := 0
+loop:
+	for {
+		select {
+		case status := <-prepStatus:
+			count++
+			if status.Done {
+				licenseFiles = append(licenseFiles, status.Meta)
+			}
+
+			if count%1000 == 0 {
+				log.Printf("Processed %d license keys", count)
+			}
+
+			if count == len(uniqueLicenseKeyList) {
+				close(licenseKeyChannel)
+				break loop
+			}
+		case err := <-errCh:
+			close(licenseKeyChannel)
+			return licenseFiles, err
+
+		}
 	}
 
-	return filesLicenseMap
+	log.Println("Preparation of license classifier data completed")
+
+	return licenseFiles, nil
+
+}
+
+func (c *Crawler) generateLicenseFile(licenseFileName string, licenseMeta License) (bool, error) {
+	client := http.Client{
+		Timeout: 10 * time.Second,
+	}
+
+	// if url not available then no point using the license classifier
+	// Names can be analyzed but in most cases license classifier does not result in any matches
+	if !strings.HasPrefix(licenseMeta.URL, "http") {
+		return false, nil
+	}
+
+	// create file
+	f, err := os.Create(licenseFileName)
+	if err != nil {
+		return false, err
+	}
+
+	defer f.Close()
+
+	// download license url contents
+	resp, err := client.Get(licenseMeta.URL)
+	if resp == nil {
+		return false, nil
+	}
+
+	if resp.StatusCode == http.StatusNotFound {
+		return false, nil
+	}
+	if err != nil {
+		return false, nil
+	}
+	defer resp.Body.Close()
+
+	_, err = io.Copy(f, resp.Body)
+	if err != nil {
+		return false, err
+	}
+
+	return true, nil
 }
