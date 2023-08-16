@@ -127,6 +127,7 @@ func (b *Builder) processLicenseInformationFromCache(license, licenseDir string,
 	if len(result) > licenseStringLimit {
 		r := []rune(result)
 		if len(r) > licenseStringLimit {
+			log.Printf("untrimmed license string: %s", result)
 			return string(r[:licenseStringLimit])
 		}
 
