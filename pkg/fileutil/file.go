@@ -2,12 +2,13 @@ package fileutil
 
 import (
 	"encoding/json"
-	"golang.org/x/xerrors"
 	"io"
 	"io/fs"
 	"log"
 	"os"
 	"path/filepath"
+
+	"golang.org/x/xerrors"
 )
 
 func Walk(root string, walkFn func(r io.Reader, path string) error) error {

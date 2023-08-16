@@ -24,4 +24,22 @@ type Index struct {
 type Version struct {
 	Version string
 	SHA1    []byte
+	License string
+}
+
+type PomProject struct {
+	GroupID     string    `xml:"groupId"`
+	ArtifactID  string    `xml:"artifactId"`
+	Version     string    `xml:"version"`
+	Name        string    `xml:"name"`
+	Description string    `xml:"description"`
+	URL         string    `xml:"url"`
+	Licenses    []License `xml:"licenses>license"`
+}
+
+type License struct {
+	Name                     string `xml:"name"`
+	URL                      string `xml:"url"`
+	LicenseKey               string
+	ClassificationConfidence float64
 }

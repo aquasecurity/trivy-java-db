@@ -17,6 +17,7 @@ import (
 var (
 	jstlSha1b, _         = hex.DecodeString("9c581de633e94be1e7a955bd4e8292f16e554387")
 	javaxServletSha1b, _ = hex.DecodeString("bca201e52333629c59e459e874e5ecd8f9899e15")
+	junitSHA, _          = hex.DecodeString("1013627e3993319870863a020034004717505815")
 	indexJstl            = types.Index{
 		GroupID:     "jstl",
 		ArtifactID:  "jstl",
@@ -30,6 +31,14 @@ var (
 		Version:     "1.1.0",
 		SHA1:        javaxServletSha1b,
 		ArchiveType: types.JarType,
+	}
+	indexJunit = types.Index{
+		GroupID:     "junit",
+		ArtifactID:  "junit",
+		Version:     "4.9",
+		SHA1:        junitSHA,
+		ArchiveType: types.JarType,
+		License:     "Common Public License Version 1.0",
 	}
 )
 
@@ -52,12 +61,19 @@ func TestSelectIndexBySha1(t *testing.T) {
 			want:      types.Index{},
 			assertErr: assert.NoError,
 		},
+		{
+			name:      "index with license using sha",
+			sha1:      "1013627e3993319870863a020034004717505815",
+			want:      indexJunit,
+			assertErr: assert.NoError,
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			dbc, err := dbtest.InitDB(t, []types.Index{
 				indexJstl,
 				indexJavaxServlet,
+				indexJunit,
 			})
 			require.NoError(t, err)
 
@@ -97,12 +113,20 @@ func TestSelectIndexByArtifactIDAndGroupID(t *testing.T) {
 			want:       types.Index{},
 			assertErr:  assert.NoError,
 		},
+		{
+			name:       "index with license using groupid and artifactid",
+			groupID:    "junit",
+			artifactID: "junit",
+			want:       indexJunit,
+			assertErr:  assert.NoError,
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			dbc, err := dbtest.InitDB(t, []types.Index{
 				indexJstl,
 				indexJavaxServlet,
+				indexJunit,
 			})
 			require.NoError(t, err)
 
@@ -139,12 +163,21 @@ func TestSelectIndexesByArtifactIDAndFileType(t *testing.T) {
 			artifactID:  "jstl",
 			archiveType: "wrong",
 		},
+		{
+			name:        "index with license using artifactid and archivetype",
+			artifactID:  "junit",
+			archiveType: types.JarType,
+			want: []types.Index{
+				indexJunit,
+			},
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			dbc, err := dbtest.InitDB(t, []types.Index{
 				indexJstl,
 				indexJavaxServlet,
+				indexJunit,
 			})
 			require.NoError(t, err)
 

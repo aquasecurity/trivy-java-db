@@ -7,7 +7,9 @@ const (
 	JarType = "jar"
 	AarType = "aar"
 
-	IndexesDir = "indexes"
+	IndexesDir                = "indexes"
+	LicenseDir                = "licenses"
+	NormalizedlicenseFileName = "/normalized_license.json"
 )
 
 type Index struct {
@@ -16,4 +18,5 @@ type Index struct {
 	Version     string
 	SHA1        []byte
 	ArchiveType ArchiveType
+	License     string
 }

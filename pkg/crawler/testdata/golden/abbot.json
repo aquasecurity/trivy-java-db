@@ -4,15 +4,18 @@
   "Versions": [
     {
       "Version": "0.12.3",
-      "SHA1": "UdKKJ9kZzoaQpA9PM1udWRzrFuk="
+      "SHA1": "UdKKJ9kZzoaQpA9PM1udWRzrFuk=",
+      "License": ""
     },
     {
       "Version": "0.13.0",
-      "SHA1": "WW2R5nYxsN6wX7aF2NG2c18+T2A="
+      "SHA1": "WW2R5nYxsN6wX7aF2NG2c18+T2A=",
+      "License": ""
     },
     {
       "Version": "1.4.0",
-      "SHA1": "ojY2RqndBZVWM7RQAQtZohr4pCM="
+      "SHA1": "ojY2RqndBZVWM7RQAQtZohr4pCM=",
+      "License": "1028932157|2166136261|2425343180|3188410119"
     }
   ],
   "ArchiveType": "jar"
