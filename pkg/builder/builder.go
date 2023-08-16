@@ -20,7 +20,7 @@ import (
 )
 
 const updateInterval = time.Hour * 72 // 3 days
-const licenseStringLimit = 50
+const licenseStringLimit = 150
 
 type Builder struct {
 	db    db.DB
