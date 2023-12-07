@@ -10,6 +10,7 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"net/url"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -170,7 +171,11 @@ func (c *Crawler) Visit(url string) error {
 func (c *Crawler) crawlSHA1(baseURL string, meta *Metadata) error {
 	var versions []Version
 	for _, version := range meta.Versioning.Versions {
-		sha1FileName := fmt.Sprintf("/%s-%s.jar.sha1", meta.ArtifactID, version)
+		// some metadata may contain characters that require escaping
+		// for example <version>1.0.7?</version>:
+		// https://repo.maven.apache.org/maven2/io/github/visal-99/b24paysdk/maven-metadata.xml
+		version = url.QueryEscape(version)
+		sha1FileName := fmt.Sprintf("/%s-%s.jar.sha1", url.QueryEscape(meta.ArtifactID), version)
 		sha1, err := c.fetchSHA1(baseURL + version + sha1FileName)
 		if err != nil {
 			return err
