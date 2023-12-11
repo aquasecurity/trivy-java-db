@@ -174,24 +174,33 @@ func (db *DB) SelectIndexByArtifactIDAndGroupID(artifactID, groupID string) (typ
 	return index, nil
 }
 
-func (db *DB) SelectIndexesByArtifactIDAndFileType(artifactID string, fileType types.ArchiveType) ([]types.Index,
+func (db *DB) SelectGroupIDByArtifactIDVersionAndFileType(artifactID, version string, fileType types.ArchiveType) (string,
 	error) {
-	var indexes []types.Index
+	var groupID string
+	var count int
 	rows, err := db.client.Query(`
-		SELECT a.group_id, a.artifact_id, i.version, i.sha1, i.archive_type
-		FROM indices i 
-		JOIN artifacts a ON a.id = i.artifact_id
-        WHERE a.artifact_id = ? AND i.archive_type = ?`,
-		artifactID, fileType)
+		SELECT relevant.group_id, COUNT(relevant.group_id) as count
+		FROM indices i
+		JOIN (SELECT a.id, a.group_id
+        	  FROM indices i
+        	  JOIN artifacts a on a.id = i.artifact_id
+        	  WHERE a.artifact_id = ? AND i.version = ? AND i.archive_type = ?) relevant ON relevant.id = i.artifact_id
+		GROUP BY "group_id"`,
+		artifactID, version, fileType)
 	if err != nil && !errors.Is(err, sql.ErrNoRows) {
-		return nil, xerrors.Errorf("select indexes error: %w", err)
+		return "", xerrors.Errorf("select indexes error: %w", err)
 	}
 	for rows.Next() {
-		var index types.Index
-		if err = rows.Scan(&index.GroupID, &index.ArtifactID, &index.Version, &index.SHA1, &index.ArchiveType); err != nil {
-			return nil, xerrors.Errorf("scan row error: %w", err)
+		var indexGroupID string
+		var indexCount int // Number of versions for current GroupID.
+		if err = rows.Scan(&indexGroupID, &indexCount); err != nil {
+			return "", xerrors.Errorf("scan row error: %w", err)
 		}
-		indexes = append(indexes, index)
+		// Use GroupID with maximum number of versions.
+		if indexCount > count {
+			groupID = indexGroupID
+			count = indexCount
+		}
 	}
-	return indexes, nil
+	return groupID, nil
 }
