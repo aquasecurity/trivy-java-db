@@ -174,33 +174,26 @@ func (db *DB) SelectIndexByArtifactIDAndGroupID(artifactID, groupID string) (typ
 	return index, nil
 }
 
-func (db *DB) SelectGroupIDByArtifactIDVersionAndFileType(artifactID, version string, fileType types.ArchiveType) (string,
-	error) {
-	var groupID string
-	var count int
+// SelectIndexesByArtifactIDAndFileType returns all indexes for `artifactID` + `fileType` if `version` exists for them
+func (db *DB) SelectIndexesByArtifactIDAndFileType(artifactID, version string, fileType types.ArchiveType) ([]types.Index, error) {
+	var indexes []types.Index
 	rows, err := db.client.Query(`
-		SELECT relevant.group_id, COUNT(relevant.group_id) as count
+		SELECT f_id.group_id, f_id.artifact_id, i.version, i.sha1, i.archive_type
 		FROM indices i
-		JOIN (SELECT a.id, a.group_id
-        	  FROM indices i
+		JOIN (SELECT a.id, a.group_id, a.artifact_id
+      	      FROM indices i
         	  JOIN artifacts a on a.id = i.artifact_id
-        	  WHERE a.artifact_id = ? AND i.version = ? AND i.archive_type = ?) relevant ON relevant.id = i.artifact_id
-		GROUP BY "group_id"`,
+      	      WHERE a.artifact_id = ? AND i.version = ? AND i.archive_type = ?) f_id ON f_id.id = i.artifact_id`,
 		artifactID, version, fileType)
 	if err != nil && !errors.Is(err, sql.ErrNoRows) {
-		return "", xerrors.Errorf("select indexes error: %w", err)
+		return nil, xerrors.Errorf("select indexes error: %w", err)
 	}
 	for rows.Next() {
-		var indexGroupID string
-		var indexCount int // Number of versions for current GroupID.
-		if err = rows.Scan(&indexGroupID, &indexCount); err != nil {
-			return "", xerrors.Errorf("scan row error: %w", err)
+		var index types.Index
+		if err = rows.Scan(&index.GroupID, &index.ArtifactID, &index.Version, &index.SHA1, &index.ArchiveType); err != nil {
+			return nil, xerrors.Errorf("scan row error: %w", err)
 		}
-		// Use GroupID with maximum number of versions.
-		if indexCount > count {
-			groupID = indexGroupID
-			count = indexCount
-		}
+		indexes = append(indexes, index)
 	}
-	return groupID, nil
+	return indexes, nil
 }

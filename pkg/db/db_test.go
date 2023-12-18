@@ -129,27 +129,33 @@ func TestSelectIndexByArtifactIDAndGroupID(t *testing.T) {
 	}
 }
 
-func TestSelectIndexesByArtifactIDVersionAndFileType(t *testing.T) {
+func TestSelectIndexesByArtifactIDAndFileType(t *testing.T) {
 	var tests = []struct {
 		name        string
 		artifactID  string
 		version     string
 		archiveType types.ArchiveType
-		wantGroupID string
+		wantIndexes []types.Index
 	}{
 		{
 			name:        "happy path some indexes found",
 			artifactID:  "jstl",
 			version:     "1.0",
 			archiveType: types.JarType,
-			wantGroupID: "javax.servlet",
+			wantIndexes: []types.Index{
+				indexJavaxServlet10,
+				indexJavaxServlet11,
+				indexJstl,
+			},
 		},
 		{
 			name:        "happy path one index found",
 			artifactID:  "jstl",
 			version:     "1.2_1",
 			archiveType: types.JarType,
-			wantGroupID: "org.apache.geronimo.bundles",
+			wantIndexes: []types.Index{
+				indexBundles,
+			},
 		},
 		{
 			name:        "there is no required version",
@@ -178,10 +184,10 @@ func TestSelectIndexesByArtifactIDVersionAndFileType(t *testing.T) {
 			})
 			require.NoError(t, err)
 
-			gotGroupID, err := dbc.SelectGroupIDByArtifactIDVersionAndFileType(tt.artifactID, tt.version, tt.archiveType)
+			gotIndexes, err := dbc.SelectIndexesByArtifactIDAndFileType(tt.artifactID, tt.version, tt.archiveType)
 
 			require.NoError(t, err)
-			assert.Equal(t, tt.wantGroupID, gotGroupID)
+			assert.Equal(t, tt.wantIndexes, gotIndexes)
 		})
 	}
 }
