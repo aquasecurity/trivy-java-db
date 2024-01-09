@@ -174,15 +174,17 @@ func (db *DB) SelectIndexByArtifactIDAndGroupID(artifactID, groupID string) (typ
 	return index, nil
 }
 
-func (db *DB) SelectIndexesByArtifactIDAndFileType(artifactID string, fileType types.ArchiveType) ([]types.Index,
-	error) {
+// SelectIndexesByArtifactIDAndFileType returns all indexes for `artifactID` + `fileType` if `version` exists for them
+func (db *DB) SelectIndexesByArtifactIDAndFileType(artifactID, version string, fileType types.ArchiveType) ([]types.Index, error) {
 	var indexes []types.Index
 	rows, err := db.client.Query(`
-		SELECT a.group_id, a.artifact_id, i.version, i.sha1, i.archive_type
-		FROM indices i 
-		JOIN artifacts a ON a.id = i.artifact_id
-        WHERE a.artifact_id = ? AND i.archive_type = ?`,
-		artifactID, fileType)
+		SELECT f_id.group_id, f_id.artifact_id, i.version, i.sha1, i.archive_type
+		FROM indices i
+		JOIN (SELECT a.id, a.group_id, a.artifact_id
+      	      FROM indices i
+        	  JOIN artifacts a on a.id = i.artifact_id
+      	      WHERE a.artifact_id = ? AND i.version = ? AND i.archive_type = ?) f_id ON f_id.id = i.artifact_id`,
+		artifactID, version, fileType)
 	if err != nil && !errors.Is(err, sql.ErrNoRows) {
 		return nil, xerrors.Errorf("select indexes error: %w", err)
 	}

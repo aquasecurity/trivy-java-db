@@ -2,7 +2,6 @@ package db_test
 
 import (
 	"encoding/hex"
-	"sort"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -15,20 +14,37 @@ import (
 )
 
 var (
-	jstlSha1b, _         = hex.DecodeString("9c581de633e94be1e7a955bd4e8292f16e554387")
-	javaxServletSha1b, _ = hex.DecodeString("bca201e52333629c59e459e874e5ecd8f9899e15")
-	indexJstl            = types.Index{
+	jstlSha1b, _            = hex.DecodeString("9c581de633e94be1e7a955bd4e8292f16e554387")
+	javaxServlet10Sha1b, _  = hex.DecodeString("5d4ae7a8a17a33e01283e76e0dff66c4bce6456a")
+	javaxServlet110Sha1b, _ = hex.DecodeString("bca201e52333629c59e459e874e5ecd8f9899e15")
+	bundlesSha1b, _         = hex.DecodeString("b65e1196b26baeeec951fef2fefd4357")
+
+	indexJstl = types.Index{
 		GroupID:     "jstl",
 		ArtifactID:  "jstl",
 		Version:     "1.0",
 		SHA1:        jstlSha1b,
 		ArchiveType: types.JarType,
 	}
-	indexJavaxServlet = types.Index{
+	indexJavaxServlet10 = types.Index{
+		GroupID:     "javax.servlet",
+		ArtifactID:  "jstl",
+		Version:     "1.0",
+		SHA1:        javaxServlet10Sha1b,
+		ArchiveType: types.JarType,
+	}
+	indexJavaxServlet11 = types.Index{
 		GroupID:     "javax.servlet",
 		ArtifactID:  "jstl",
 		Version:     "1.1.0",
-		SHA1:        javaxServletSha1b,
+		SHA1:        javaxServlet110Sha1b,
+		ArchiveType: types.JarType,
+	}
+	indexBundles = types.Index{
+		GroupID:     "org.apache.geronimo.bundles",
+		ArtifactID:  "jstl",
+		Version:     "1.2_1",
+		SHA1:        bundlesSha1b,
 		ArchiveType: types.JarType,
 	}
 )
@@ -57,7 +73,7 @@ func TestSelectIndexBySha1(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			dbc, err := dbtest.InitDB(t, []types.Index{
 				indexJstl,
-				indexJavaxServlet,
+				indexJavaxServlet10,
 			})
 			require.NoError(t, err)
 
@@ -80,7 +96,7 @@ func TestSelectIndexByArtifactIDAndGroupID(t *testing.T) {
 			name:       "happy path",
 			groupID:    "javax.servlet",
 			artifactID: "jstl",
-			want:       indexJavaxServlet,
+			want:       indexJavaxServlet10,
 			assertErr:  assert.NoError,
 		},
 		{
@@ -102,7 +118,7 @@ func TestSelectIndexByArtifactIDAndGroupID(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			dbc, err := dbtest.InitDB(t, []types.Index{
 				indexJstl,
-				indexJavaxServlet,
+				indexJavaxServlet10,
 			})
 			require.NoError(t, err)
 
@@ -117,17 +133,35 @@ func TestSelectIndexesByArtifactIDAndFileType(t *testing.T) {
 	var tests = []struct {
 		name        string
 		artifactID  string
+		version     string
 		archiveType types.ArchiveType
-		want        []types.Index
+		wantIndexes []types.Index
 	}{
 		{
-			name:        "happy path",
+			name:        "happy path some indexes found",
 			artifactID:  "jstl",
+			version:     "1.0",
 			archiveType: types.JarType,
-			want: []types.Index{
-				indexJavaxServlet,
+			wantIndexes: []types.Index{
+				indexJavaxServlet10,
+				indexJavaxServlet11,
 				indexJstl,
 			},
+		},
+		{
+			name:        "happy path one index found",
+			artifactID:  "jstl",
+			version:     "1.2_1",
+			archiveType: types.JarType,
+			wantIndexes: []types.Index{
+				indexBundles,
+			},
+		},
+		{
+			name:        "there is no required version",
+			artifactID:  "jstl",
+			version:     "2.0",
+			archiveType: types.JarType,
 		},
 		{
 			name:        "wrong ArtifactID",
@@ -144,17 +178,16 @@ func TestSelectIndexesByArtifactIDAndFileType(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			dbc, err := dbtest.InitDB(t, []types.Index{
 				indexJstl,
-				indexJavaxServlet,
+				indexJavaxServlet10,
+				indexJavaxServlet11,
+				indexBundles,
 			})
 			require.NoError(t, err)
 
-			got, err := dbc.SelectIndexesByArtifactIDAndFileType(tt.artifactID, tt.archiveType)
-			sort.Slice(got, func(i, j int) bool {
-				return got[i].GroupID < got[j].GroupID
-			})
+			gotIndexes, err := dbc.SelectIndexesByArtifactIDAndFileType(tt.artifactID, tt.version, tt.archiveType)
 
 			require.NoError(t, err)
-			assert.Equal(t, tt.want, got)
+			assert.Equal(t, tt.wantIndexes, gotIndexes)
 		})
 	}
 }
