@@ -232,14 +232,15 @@ func (c *Crawler) parseMetadata(url string) (*Metadata, error) {
 
 func (c *Crawler) fetchSHA1(url string) ([]byte, error) {
 	resp, err := c.http.Get(url)
-	// some projects don't have xxx.jar and xxx.jar.sha1 files
-	if resp.StatusCode == http.StatusNotFound {
-		return nil, nil // TODO add special error for this
-	}
 	if err != nil {
 		return nil, xerrors.Errorf("can't get sha1 from %s: %w", url, err)
 	}
 	defer resp.Body.Close()
+
+	// some projects don't have xxx.jar and xxx.jar.sha1 files
+	if resp.StatusCode == http.StatusNotFound {
+		return nil, nil // TODO add special error for this
+	}
 
 	sha1, err := io.ReadAll(resp.Body)
 	if err != nil {
