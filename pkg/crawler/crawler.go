@@ -41,7 +41,7 @@ type Option struct {
 
 func NewCrawler(opt Option) Crawler {
 	client := retryablehttp.NewClient()
-	client.RetryMax = 50
+	client.RetryMax = 10
 	client.Logger = nil
 
 	if opt.RootUrl == "" {
