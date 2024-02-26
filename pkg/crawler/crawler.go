@@ -63,6 +63,9 @@ func NewCrawler(opt Option) Crawler {
 
 func (c *Crawler) Crawl(ctx context.Context) error {
 	log.Println("Crawl maven repository and save indexes")
+	ctx, ctxCancelFunc := context.WithCancel(ctx)
+	defer ctxCancelFunc()
+
 	errCh := make(chan error)
 	defer close(errCh)
 
@@ -94,7 +97,7 @@ func (c *Crawler) Crawl(ctx context.Context) error {
 			go func(url string) {
 				defer c.limit.Release(1)
 				defer c.wg.Done()
-				if err := c.Visit(url); err != nil {
+				if err := c.Visit(ctx, url); err != nil {
 					errCh <- xerrors.Errorf("visit error: %w", err)
 				}
 			}(url)
@@ -108,6 +111,7 @@ loop:
 		case <-crawlDone:
 			break loop
 		case err := <-errCh:
+			ctxCancelFunc() // Stop all running Visit functions to avoid writing to closed c.urlCh.
 			close(c.urlCh)
 			return err
 
@@ -117,56 +121,62 @@ loop:
 	return nil
 }
 
-func (c *Crawler) Visit(url string) error {
-	resp, err := c.http.Get(url)
-	if err != nil {
-		return xerrors.Errorf("http get error (%s): %w", url, err)
-	}
-	defer resp.Body.Close()
-
-	d, err := goquery.NewDocumentFromReader(resp.Body)
-	if err != nil {
-		return xerrors.Errorf("can't create new goquery doc: %w", err)
-	}
-
-	var children []string
-	var foundMetadata bool
-	d.Find("a").Each(func(i int, selection *goquery.Selection) {
-		link := selection.Text()
-		if link == "maven-metadata.xml" {
-			foundMetadata = true
-			return
-		} else if link == "../" || !strings.HasSuffix(link, "/") {
-			// only `../` and dirs have `/` suffix. We don't need to check other files.
-			return
-		}
-
-		children = append(children, link)
-	})
-
-	if foundMetadata {
-		meta, err := c.parseMetadata(url + "maven-metadata.xml")
+func (c *Crawler) Visit(ctx context.Context, url string) error {
+	select {
+	// Context can be canceled if we receive an error from another Visit function.
+	case <-ctx.Done():
+		return nil
+	default:
+		resp, err := c.http.Get(url)
 		if err != nil {
-			return xerrors.Errorf("metadata parse error: %w", err)
+			return xerrors.Errorf("http get error (%s): %w", url, err)
 		}
-		if meta != nil {
-			if err = c.crawlSHA1(url, meta); err != nil {
-				return err
+		defer resp.Body.Close()
+
+		d, err := goquery.NewDocumentFromReader(resp.Body)
+		if err != nil {
+			return xerrors.Errorf("can't create new goquery doc: %w", err)
+		}
+
+		var children []string
+		var foundMetadata bool
+		d.Find("a").Each(func(i int, selection *goquery.Selection) {
+			link := selection.Text()
+			if link == "maven-metadata.xml" {
+				foundMetadata = true
+				return
+			} else if link == "../" || !strings.HasSuffix(link, "/") {
+				// only `../` and dirs have `/` suffix. We don't need to check other files.
+				return
 			}
-			// Return here since there is no need to crawl dirs anymore.
-			return nil
+
+			children = append(children, link)
+		})
+
+		if foundMetadata {
+			meta, err := c.parseMetadata(url + "maven-metadata.xml")
+			if err != nil {
+				return xerrors.Errorf("metadata parse error: %w", err)
+			}
+			if meta != nil {
+				if err = c.crawlSHA1(url, meta); err != nil {
+					return err
+				}
+				// Return here since there is no need to crawl dirs anymore.
+				return nil
+			}
 		}
+
+		c.wg.Add(len(children))
+
+		go func() {
+			for _, child := range children {
+				c.urlCh <- url + child
+			}
+		}()
+
+		return nil
 	}
-
-	c.wg.Add(len(children))
-
-	go func() {
-		for _, child := range children {
-			c.urlCh <- url + child
-		}
-	}()
-
-	return nil
 }
 
 func (c *Crawler) crawlSHA1(baseURL string, meta *Metadata) error {
