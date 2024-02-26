@@ -63,8 +63,8 @@ func NewCrawler(opt Option) Crawler {
 
 func (c *Crawler) Crawl(ctx context.Context) error {
 	log.Println("Crawl maven repository and save indexes")
-	ctx, ctxCancelFunc := context.WithCancel(ctx)
-	defer ctxCancelFunc()
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
 
 	errCh := make(chan error)
 	defer close(errCh)
@@ -111,7 +111,7 @@ loop:
 		case <-crawlDone:
 			break loop
 		case err := <-errCh:
-			ctxCancelFunc() // Stop all running Visit functions to avoid writing to closed c.urlCh.
+			cancel() // Stop all running Visit functions to avoid writing to closed c.urlCh.
 			close(c.urlCh)
 			return err
 
