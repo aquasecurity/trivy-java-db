@@ -122,7 +122,11 @@ loop:
 }
 
 func (c *Crawler) Visit(ctx context.Context, url string) error {
-	resp, err := c.http.Get(url)
+	req, err := retryablehttp.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		return xerrors.Errorf("unable to new HTTp request: %w", err)
+	}
+	resp, err := c.http.Do(req)
 	if err != nil {
 		return xerrors.Errorf("http get error (%s): %w", url, err)
 	}
@@ -149,12 +153,12 @@ func (c *Crawler) Visit(ctx context.Context, url string) error {
 	})
 
 	if foundMetadata {
-		meta, err := c.parseMetadata(url + "maven-metadata.xml")
+		meta, err := c.parseMetadata(ctx, url+"maven-metadata.xml")
 		if err != nil {
 			return xerrors.Errorf("metadata parse error: %w", err)
 		}
 		if meta != nil {
-			if err = c.crawlSHA1(url, meta); err != nil {
+			if err = c.crawlSHA1(ctx, url, meta); err != nil {
 				return err
 			}
 			// Return here since there is no need to crawl dirs anymore.
@@ -179,7 +183,7 @@ func (c *Crawler) Visit(ctx context.Context, url string) error {
 	return nil
 }
 
-func (c *Crawler) crawlSHA1(baseURL string, meta *Metadata) error {
+func (c *Crawler) crawlSHA1(ctx context.Context, baseURL string, meta *Metadata) error {
 	var versions []Version
 	for _, version := range meta.Versioning.Versions {
 		// some metadata may contain characters that require escaping
@@ -187,7 +191,7 @@ func (c *Crawler) crawlSHA1(baseURL string, meta *Metadata) error {
 		// https://repo.maven.apache.org/maven2/io/github/visal-99/b24paysdk/maven-metadata.xml
 		version = url.QueryEscape(version)
 		sha1FileName := fmt.Sprintf("/%s-%s.jar.sha1", url.QueryEscape(meta.ArtifactID), version)
-		sha1, err := c.fetchSHA1(baseURL + version + sha1FileName)
+		sha1, err := c.fetchSHA1(ctx, baseURL+version+sha1FileName)
 		if err != nil {
 			return err
 		}
@@ -217,10 +221,14 @@ func (c *Crawler) crawlSHA1(baseURL string, meta *Metadata) error {
 	return nil
 }
 
-func (c *Crawler) parseMetadata(url string) (*Metadata, error) {
-	resp, err := c.http.Get(url)
+func (c *Crawler) parseMetadata(ctx context.Context, url string) (*Metadata, error) {
+	req, err := retryablehttp.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
-		return nil, xerrors.Errorf("can't get url: %w", err)
+		return nil, xerrors.Errorf("unable to new HTTp request: %w", err)
+	}
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return nil, xerrors.Errorf("http get error (%s): %w", url, err)
 	}
 	defer resp.Body.Close()
 
@@ -241,10 +249,14 @@ func (c *Crawler) parseMetadata(url string) (*Metadata, error) {
 	return &meta, nil
 }
 
-func (c *Crawler) fetchSHA1(url string) ([]byte, error) {
-	resp, err := c.http.Get(url)
+func (c *Crawler) fetchSHA1(ctx context.Context, url string) ([]byte, error) {
+	req, err := retryablehttp.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
-		return nil, xerrors.Errorf("can't get sha1 from %s: %w", url, err)
+		return nil, xerrors.Errorf("unable to new HTTp request: %w", err)
+	}
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return nil, xerrors.Errorf("http get error (%s): %w", url, err)
 	}
 	defer resp.Body.Close()
 
