@@ -124,7 +124,7 @@ loop:
 func (c *Crawler) Visit(ctx context.Context, url string) error {
 	req, err := retryablehttp.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
-		return xerrors.Errorf("unable to new HTTp request: %w", err)
+		return xerrors.Errorf("unable to new HTTP request: %w", err)
 	}
 	resp, err := c.http.Do(req)
 	if err != nil {
@@ -224,7 +224,7 @@ func (c *Crawler) crawlSHA1(ctx context.Context, baseURL string, meta *Metadata)
 func (c *Crawler) parseMetadata(ctx context.Context, url string) (*Metadata, error) {
 	req, err := retryablehttp.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
-		return nil, xerrors.Errorf("unable to new HTTp request: %w", err)
+		return nil, xerrors.Errorf("unable to new HTTP request: %w", err)
 	}
 	resp, err := c.http.Do(req)
 	if err != nil {
@@ -252,7 +252,7 @@ func (c *Crawler) parseMetadata(ctx context.Context, url string) (*Metadata, err
 func (c *Crawler) fetchSHA1(ctx context.Context, url string) ([]byte, error) {
 	req, err := retryablehttp.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
-		return nil, xerrors.Errorf("unable to new HTTp request: %w", err)
+		return nil, xerrors.Errorf("unable to new HTTP request: %w", err)
 	}
 	resp, err := c.http.Do(req)
 	if err != nil {
