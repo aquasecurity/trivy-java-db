@@ -26,10 +26,11 @@ type Crawler struct {
 	dir  string
 	http *retryablehttp.Client
 
-	rootUrl string
-	wg      sync.WaitGroup
-	urlCh   chan string
-	limit   *semaphore.Weighted
+	rootUrl         string
+	wg              sync.WaitGroup
+	urlCh           chan string
+	limit           *semaphore.Weighted
+	wrongSHA1Values []string
 }
 
 type Option struct {
@@ -117,6 +118,12 @@ loop:
 		}
 	}
 	log.Println("Crawl completed")
+	if len(c.wrongSHA1Values) > 0 {
+		log.Println("Wrong sha1 files:")
+		for _, wrongSHA1 := range c.wrongSHA1Values {
+			log.Println(wrongSHA1)
+		}
+	}
 	return nil
 }
 
@@ -325,7 +332,8 @@ func (c *Crawler) fetchSHA1(ctx context.Context, url string) ([]byte, error) {
 		}
 	}
 	if len(sha1b) == 0 {
-		return nil, xerrors.Errorf("failed to decode sha1 %s: %w", url, err)
+		c.wrongSHA1Values = append(c.wrongSHA1Values, fmt.Sprintf("%s (%s)", url, err))
+		return nil, nil
 	}
 	return sha1b, nil
 }
