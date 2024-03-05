@@ -10,7 +10,6 @@ import (
 	"io"
 	"log"
 	"net/http"
-	"net/url"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -141,6 +140,7 @@ func (c *Crawler) Visit(ctx context.Context, url string) error {
 	var foundMetadata bool
 	d.Find("a").Each(func(i int, selection *goquery.Selection) {
 		link := selection.Text()
+		// Find `maven-metadata.xml` to get artifact URL and determine the ArtifactID and GroupID
 		if link == "maven-metadata.xml" {
 			foundMetadata = true
 			return
@@ -158,7 +158,7 @@ func (c *Crawler) Visit(ctx context.Context, url string) error {
 			return xerrors.Errorf("metadata parse error: %w", err)
 		}
 		if meta != nil {
-			if err = c.crawlSHA1(ctx, url, meta); err != nil {
+			if err = c.crawlSHA1(ctx, url, meta, children); err != nil {
 				return err
 			}
 			// Return here since there is no need to crawl dirs anymore.
@@ -183,26 +183,33 @@ func (c *Crawler) Visit(ctx context.Context, url string) error {
 	return nil
 }
 
-func (c *Crawler) crawlSHA1(ctx context.Context, baseURL string, meta *Metadata) error {
-	var versions []Version
-	for _, version := range meta.Versioning.Versions {
-		// some metadata may contain characters that require escaping
-		// for example <version>1.0.7?</version>:
-		// https://repo.maven.apache.org/maven2/io/github/visal-99/b24paysdk/maven-metadata.xml
-		version = url.QueryEscape(version)
-		sha1FileName := fmt.Sprintf("/%s-%s.jar.sha1", url.QueryEscape(meta.ArtifactID), version)
-		sha1, err := c.fetchSHA1(ctx, baseURL+version+sha1FileName)
+func (c *Crawler) crawlSHA1(ctx context.Context, baseURL string, meta *Metadata, versionDirs []string) error {
+	var sha1URLs []string
+	// Check each version dir to find links to `*.jar.sha1` files.
+	for _, versionDir := range versionDirs {
+		versionDirURL := baseURL + versionDir
+		urls, err := c.sha1Urls(ctx, versionDirURL)
 		if err != nil {
-			return err
+			return xerrors.Errorf("unable to get list of sha1 files from %q: %s", versionDirURL, err)
+		}
+		sha1URLs = append(sha1URLs, urls...)
+	}
+
+	var versions []Version
+	for _, sha1URL := range sha1URLs {
+		sha1, err := c.fetchSHA1(ctx, sha1URL)
+		if err != nil {
+			return xerrors.Errorf("unable to fetch sha1: %s", err)
 		}
 		if len(sha1) != 0 {
 			v := Version{
-				Version: version,
+				Version: versionFromSha1URL(meta.ArtifactID, sha1URL),
 				SHA1:    sha1,
 			}
 			versions = append(versions, v)
 		}
 	}
+
 	if len(versions) == 0 {
 		return nil
 	}
@@ -219,6 +226,35 @@ func (c *Crawler) crawlSHA1(ctx context.Context, baseURL string, meta *Metadata)
 		return xerrors.Errorf("json write error: %w", err)
 	}
 	return nil
+}
+
+func (c *Crawler) sha1Urls(ctx context.Context, url string) ([]string, error) {
+	req, err := retryablehttp.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		return nil, xerrors.Errorf("unable to new HTTP request: %w", err)
+	}
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return nil, xerrors.Errorf("http get error (%s): %w", url, err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	d, err := goquery.NewDocumentFromReader(resp.Body)
+	if err != nil {
+		return nil, xerrors.Errorf("can't create new goquery doc: %w", err)
+	}
+
+	// Version dir may contain multiple `*jar.sha1` files.
+	// e.g. https://repo1.maven.org/maven2/org/jasypt/jasypt/1.9.3/
+	// We need to take all links.
+	var sha1URLs []string
+	d.Find("a").Each(func(i int, selection *goquery.Selection) {
+		link := selection.Text()
+		if strings.HasSuffix(link, ".jar.sha1") {
+			sha1URLs = append(sha1URLs, url+link)
+		}
+	})
+	return sha1URLs, nil
 }
 
 func (c *Crawler) parseMetadata(ctx context.Context, url string) (*Metadata, error) {
@@ -258,12 +294,7 @@ func (c *Crawler) fetchSHA1(ctx context.Context, url string) ([]byte, error) {
 	if err != nil {
 		return nil, xerrors.Errorf("http get error (%s): %w", url, err)
 	}
-	defer resp.Body.Close()
-
-	// some projects don't have xxx.jar and xxx.jar.sha1 files
-	if resp.StatusCode == http.StatusNotFound {
-		return nil, nil // TODO add special error for this
-	}
+	defer func() { _ = resp.Body.Close() }()
 
 	sha1, err := io.ReadAll(resp.Body)
 	if err != nil {
@@ -290,4 +321,10 @@ func (c *Crawler) fetchSHA1(ctx context.Context, url string) ([]byte, error) {
 		return nil, xerrors.Errorf("failed to decode sha1 %s: %w", url, err)
 	}
 	return sha1b, nil
+}
+
+func versionFromSha1URL(artifactId, sha1URL string) string {
+	ss := strings.Split(sha1URL, "/")
+	fileName := ss[len(ss)-1]
+	return strings.TrimSuffix(strings.TrimPrefix(fileName, artifactId+"-"), ".jar.sha1")
 }
