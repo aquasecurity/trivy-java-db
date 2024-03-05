@@ -296,6 +296,13 @@ func (c *Crawler) fetchSHA1(ctx context.Context, url string) ([]byte, error) {
 	}
 	defer func() { _ = resp.Body.Close() }()
 
+	// These are cases when version dir contains link to sha1 file
+	// But file doesn't exist
+	// e.g. https://repo.maven.apache.org/maven2/com/adobe/aem/uber-jar/6.4.8.2/uber-jar-6.4.8.2-sources.jar.sha1
+	if resp.StatusCode == http.StatusNotFound {
+		return nil, nil // TODO add special error for this
+	}
+
 	sha1, err := io.ReadAll(resp.Body)
 	if err != nil {
 		return nil, xerrors.Errorf("can't read sha1 %s: %w", url, err)
