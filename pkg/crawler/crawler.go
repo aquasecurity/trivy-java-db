@@ -257,7 +257,8 @@ func (c *Crawler) sha1Urls(ctx context.Context, url string) ([]string, error) {
 	var sha1URLs []string
 	d.Find("a").Each(func(i int, selection *goquery.Selection) {
 		link := selection.Text()
-		if strings.HasSuffix(link, ".jar.sha1") {
+		if strings.HasSuffix(link, ".jar.sha1") && !strings.HasSuffix(link, "sources.jar.sha1") &&
+			!strings.HasSuffix(link, "test.jar.sha1") && !strings.HasSuffix(link, "javadoc.jar.sha1") {
 			sha1URLs = append(sha1URLs, url+link)
 		}
 	})
