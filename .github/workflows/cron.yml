@@ -46,9 +46,17 @@ jobs:
           username: ${{ env.GH_USER }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
+      # `oras push` fails if repository contains uppercase characters
+      # required for testing in forks
+      - name: GH repo to lower case
+        id: github-repo-lower-case
+        uses: ASzc/change-string-case-action@v6
+        with:
+          string: ${{ github.repository }}
+
       - name: Upload assets to GHCR
         run: |
           oras version
           oras push --artifact-type application/vnd.aquasec.trivy.config.v1+json \
-          ghcr.io/${{ github.repository }}:${DB_VERSION} \
+          ghcr.io/${{ steps.github-repo-lower-case.outputs.lowercase }}/trivy-java-db:${DB_VERSION} \
           javadb.tar.gz:application/vnd.aquasec.trivy.javadb.layer.v1.tar+gzip
