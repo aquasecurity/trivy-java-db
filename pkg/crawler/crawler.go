@@ -256,10 +256,14 @@ func (c *Crawler) sha1Urls(ctx context.Context, url string) ([]string, error) {
 	// We need to take all links.
 	var sha1URLs []string
 	d.Find("a").Each(func(i int, selection *goquery.Selection) {
-		link := selection.Text()
-		if strings.HasSuffix(link, ".jar.sha1") && !strings.HasSuffix(link, "sources.jar.sha1") &&
-			!strings.HasSuffix(link, "test.jar.sha1") && !strings.HasSuffix(link, "javadoc.jar.sha1") {
-			sha1URLs = append(sha1URLs, url+link)
+		// There are times when the file name is very long.
+		// e.g. https://repo.maven.apache.org/maven2/africa/absa/inception-oauth2-resource-server/1.0.0/
+		// We need to use `title` to make sure we use the correct filename
+		if fileName, ok := selection.Attr("title"); ok {
+			if strings.HasSuffix(fileName, ".jar.sha1") && !strings.HasSuffix(fileName, "sources.jar.sha1") &&
+				!strings.HasSuffix(fileName, "test.jar.sha1") && !strings.HasSuffix(fileName, "javadoc.jar.sha1") {
+				sha1URLs = append(sha1URLs, url+fileName)
+			}
 		}
 	})
 	return sha1URLs, nil
