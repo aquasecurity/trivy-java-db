@@ -258,8 +258,8 @@ func (c *Crawler) sha1Urls(ctx context.Context, url string) ([]string, error) {
 	d.Find("a").Each(func(i int, selection *goquery.Selection) {
 		// There are times when the file name is very long.
 		// e.g. https://repo.maven.apache.org/maven2/africa/absa/inception-oauth2-resource-server/1.0.0/
-		// We need to use `title` to make sure we use the correct filename
-		if fileName, ok := selection.Attr("title"); ok {
+		// We need to use `href` to make sure we use the correct filename
+		if fileName, ok := selection.Attr("href"); ok {
 			if strings.HasSuffix(fileName, ".jar.sha1") && !strings.HasSuffix(fileName, "sources.jar.sha1") &&
 				!strings.HasSuffix(fileName, "test.jar.sha1") && !strings.HasSuffix(fileName, "javadoc.jar.sha1") {
 				sha1URLs = append(sha1URLs, url+fileName)
