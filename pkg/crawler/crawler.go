@@ -146,22 +146,16 @@ func (c *Crawler) Visit(ctx context.Context, url string) error {
 	var children []string
 	var foundMetadata bool
 	d.Find("a").Each(func(i int, selection *goquery.Selection) {
-		fileName := selection.Text()
-		// Find `maven-metadata.xml` to get artifact URL and determine the ArtifactID and GroupID
-		if fileName == "maven-metadata.xml" {
+		link := selection.Text()
+		if link == "maven-metadata.xml" {
 			foundMetadata = true
 			return
-		} else if fileName == "../" || !strings.HasSuffix(fileName, "/") {
+		} else if link == "../" || !strings.HasSuffix(link, "/") {
 			// only `../` and dirs have `/` suffix. We don't need to check other files.
 			return
 		}
 
-		// There are times when the dir name is very long.
-		// e.g. https://repo.maven.apache.org/maven2/ai/grakn/grakn-bootup/
-		// We need to use `href` to make sure we use the correct dir name
-		if dir, ok := selection.Attr("href"); ok {
-			children = append(children, dir)
-		}
+		children = append(children, link)
 	})
 
 	if foundMetadata {
