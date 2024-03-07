@@ -208,9 +208,9 @@ func (c *Crawler) crawlSHA1(ctx context.Context, baseURL string, meta *Metadata,
 		if err != nil {
 			return xerrors.Errorf("unable to fetch sha1: %s", err)
 		}
-		if len(sha1) != 0 {
+		if ver := versionFromSha1URL(meta.ArtifactID, sha1URL); ver != "" && len(sha1) != 0 {
 			v := Version{
-				Version: versionFromSha1URL(meta.ArtifactID, sha1URL),
+				Version: ver,
 				SHA1:    sha1,
 			}
 			versions = append(versions, v)
@@ -348,5 +348,8 @@ func (c *Crawler) fetchSHA1(ctx context.Context, url string) ([]byte, error) {
 func versionFromSha1URL(artifactId, sha1URL string) string {
 	ss := strings.Split(sha1URL, "/")
 	fileName := ss[len(ss)-1]
+	if !strings.HasPrefix(fileName, artifactId) {
+		return ""
+	}
 	return strings.TrimSuffix(strings.TrimPrefix(fileName, artifactId+"-"), ".jar.sha1")
 }
