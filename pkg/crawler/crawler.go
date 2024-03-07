@@ -284,11 +284,13 @@ func (c *Crawler) parseMetadata(ctx context.Context, url string) (*Metadata, err
 	if err = xml.NewDecoder(resp.Body).Decode(&meta); err != nil {
 		return nil, xerrors.Errorf("%s decode error: %w", url, err)
 	}
-	// we don't need metadata.xml files from version folder
-	// e.g. https://repo.maven.apache.org/maven2/HTTPClient/HTTPClient/0.3-3/maven-metadata.xml
-	if len(meta.Versioning.Versions) == 0 {
+	// Skip metadata without `GroupID` and ArtifactID` fields
+	// e.g. https://repo.maven.apache.org/maven2/at/molindo/maven-metadata.xml
+	if meta.ArtifactID == "" || meta.GroupID == "" {
+		log.Fatalf(url)
 		return nil, nil
 	}
+
 	// also we need to skip metadata.xml files from groupID folder
 	// e.g. https://repo.maven.apache.org/maven2/args4j/maven-metadata.xml
 	if len(strings.Split(url, "/")) < 7 {
