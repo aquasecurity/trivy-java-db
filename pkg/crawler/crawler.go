@@ -277,6 +277,12 @@ func (c *Crawler) sha1Urls(ctx context.Context, url string) ([]string, error) {
 }
 
 func (c *Crawler) parseMetadata(ctx context.Context, url string) (*Metadata, error) {
+	// We need to skip metadata.xml files from groupID folder
+	// e.g. https://repo.maven.apache.org/maven2/args4j/maven-metadata.xml
+	if len(strings.Split(url, "/")) < 7 {
+		return nil, nil
+	}
+
 	req, err := retryablehttp.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
 		return nil, xerrors.Errorf("unable to new HTTP request: %w", err)
@@ -297,9 +303,9 @@ func (c *Crawler) parseMetadata(ctx context.Context, url string) (*Metadata, err
 		return nil, nil
 	}
 
-	// also we need to skip metadata.xml files from groupID folder
-	// e.g. https://repo.maven.apache.org/maven2/args4j/maven-metadata.xml
-	if len(strings.Split(url, "/")) < 7 {
+	// we don't need metadata.xml files from version folder
+	// e.g. https://repo.maven.apache.org/maven2/HTTPClient/HTTPClient/0.3-3/maven-metadata.xml
+	if len(meta.Versioning.Versions) == 0 {
 		return nil, nil
 	}
 	return &meta, nil
