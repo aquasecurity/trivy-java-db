@@ -20,7 +20,7 @@ import (
 	"golang.org/x/xerrors"
 )
 
-const mavenRepoURL = "https://repo.maven.apache.org/maven2/"
+const mavenRepoURL = "https://repo.maven.apache.org/maven2/ai/grakn/grakn-bootup/"
 
 type Crawler struct {
 	dir  string
@@ -146,17 +146,22 @@ func (c *Crawler) Visit(ctx context.Context, url string) error {
 	var children []string
 	var foundMetadata bool
 	d.Find("a").Each(func(i int, selection *goquery.Selection) {
-		link := selection.Text()
+		fileName := selection.Text()
 		// Find `maven-metadata.xml` to get artifact URL and determine the ArtifactID and GroupID
-		if link == "maven-metadata.xml" {
+		if fileName == "maven-metadata.xml" {
 			foundMetadata = true
 			return
-		} else if link == "../" || !strings.HasSuffix(link, "/") {
+		} else if fileName == "../" || !strings.HasSuffix(fileName, "/") {
 			// only `../` and dirs have `/` suffix. We don't need to check other files.
 			return
 		}
 
-		children = append(children, link)
+		// There are times when the dir name is very long.
+		// e.g. https://repo.maven.apache.org/maven2/ai/grakn/grakn-bootup/
+		// We need to use `href` to make sure we use the correct dir name
+		if dir, ok := selection.Attr("href"); ok {
+			children = append(children, dir)
+		}
 	})
 
 	if foundMetadata {
