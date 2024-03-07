@@ -20,7 +20,7 @@ import (
 	"golang.org/x/xerrors"
 )
 
-const mavenRepoURL = "https://repo.maven.apache.org/maven2/ai/grakn/grakn-bootup/"
+const mavenRepoURL = "https://repo.maven.apache.org/maven2/"
 
 type Crawler struct {
 	dir  string
@@ -267,8 +267,8 @@ func (c *Crawler) sha1Urls(ctx context.Context, url string) ([]string, error) {
 		if fileName, ok := selection.Attr("href"); ok {
 			// don't include sources, test, javadocs, scaladoc files
 			if strings.HasSuffix(fileName, ".jar.sha1") && !strings.HasSuffix(fileName, "sources.jar.sha1") &&
-				!strings.HasSuffix(fileName, "test.jar.sha1") && !strings.HasSuffix(fileName, "javadoc.jar.sha1") &&
-				!strings.HasSuffix(fileName, ".scaladoc.jar.sha1") {
+				!strings.HasSuffix(fileName, "test.jar.sha1") && !strings.HasSuffix(fileName, "tests.jar.sha1") &&
+				!strings.HasSuffix(fileName, "javadoc.jar.sha1") && !strings.HasSuffix(fileName, ".scaladoc.jar.sha1") {
 				sha1URLs = append(sha1URLs, url+fileName)
 			}
 		}
