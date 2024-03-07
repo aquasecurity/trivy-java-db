@@ -287,7 +287,6 @@ func (c *Crawler) parseMetadata(ctx context.Context, url string) (*Metadata, err
 	// Skip metadata without `GroupID` and ArtifactID` fields
 	// e.g. https://repo.maven.apache.org/maven2/at/molindo/maven-metadata.xml
 	if meta.ArtifactID == "" || meta.GroupID == "" {
-		log.Fatalf(url)
 		return nil, nil
 	}
 
