@@ -146,16 +146,17 @@ func (c *Crawler) Visit(ctx context.Context, url string) error {
 	var children []string
 	var foundMetadata bool
 	d.Find("a").Each(func(i int, selection *goquery.Selection) {
-		link := selection.Text()
-		if link == "maven-metadata.xml" {
-			foundMetadata = true
-			return
-		} else if link == "../" || !strings.HasSuffix(link, "/") {
-			// only `../` and dirs have `/` suffix. We don't need to check other files.
-			return
+		if link, ok := selection.Attr("href"); ok {
+			if link == "maven-metadata.xml" {
+				foundMetadata = true
+				return
+			} else if link == "../" || !strings.HasSuffix(link, "/") {
+				// only `../` and dirs have `/` suffix. We don't need to check other files.
+				return
+			}
+			children = append(children, link)
 		}
 
-		children = append(children, link)
 	})
 
 	if foundMetadata {
