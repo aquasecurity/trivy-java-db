@@ -230,10 +230,12 @@ func (c *Crawler) crawlSHA1(ctx context.Context, baseURL string, meta *Metadata,
 			return !bytes.Equal(v.SHA1, dirVersionSha1)
 		})
 
-		versions = append(versions, Version{
-			Version: dirVersion,
-			SHA1:    dirVersionSha1,
-		})
+		if dirVersionSha1 != nil {
+			versions = append(versions, Version{
+				Version: dirVersion,
+				SHA1:    dirVersionSha1,
+			})
+		}
 
 		foundVersions = append(foundVersions, versions...)
 	}
