@@ -1,12 +1,11 @@
 package crawler
 
 import (
+	"bytes"
 	"context"
 	"encoding/hex"
 	"encoding/xml"
 	"fmt"
-	"github.com/aquasecurity/trivy-java-db/pkg/fileutil"
-	"github.com/aquasecurity/trivy-java-db/pkg/types"
 	"io"
 	"log"
 	"net/http"
@@ -16,8 +15,12 @@ import (
 
 	"github.com/PuerkitoBio/goquery"
 	"github.com/hashicorp/go-retryablehttp"
+	"github.com/samber/lo"
 	"golang.org/x/sync/semaphore"
 	"golang.org/x/xerrors"
+
+	"github.com/aquasecurity/trivy-java-db/pkg/fileutil"
+	"github.com/aquasecurity/trivy-java-db/pkg/types"
 )
 
 const mavenRepoURL = "https://repo.maven.apache.org/maven2/"
@@ -146,17 +149,15 @@ func (c *Crawler) Visit(ctx context.Context, url string) error {
 	var children []string
 	var foundMetadata bool
 	d.Find("a").Each(func(i int, selection *goquery.Selection) {
-		if link, ok := selection.Attr("href"); ok {
-			if link == "maven-metadata.xml" {
-				foundMetadata = true
-				return
-			} else if link == "../" || !strings.HasSuffix(link, "/") {
-				// only `../` and dirs have `/` suffix. We don't need to check other files.
-				return
-			}
-			children = append(children, link)
+		link := linkFromSelection(selection)
+		if link == "maven-metadata.xml" {
+			foundMetadata = true
+			return
+		} else if link == "../" || !strings.HasSuffix(link, "/") {
+			// only `../` and dirs have `/` suffix. We don't need to check other files.
+			return
 		}
-
+		children = append(children, link)
 	})
 
 	if foundMetadata {
@@ -190,41 +191,61 @@ func (c *Crawler) Visit(ctx context.Context, url string) error {
 	return nil
 }
 
-func (c *Crawler) crawlSHA1(ctx context.Context, baseURL string, meta *Metadata, versionDirs []string) error {
-	var sha1URLs []string
+func (c *Crawler) crawlSHA1(ctx context.Context, baseURL string, meta *Metadata, dirs []string) error {
+	var foundVersions []Version
 	// Check each version dir to find links to `*.jar.sha1` files.
-	for _, versionDir := range versionDirs {
-		versionDirURL := baseURL + versionDir
-		urls, err := c.sha1Urls(ctx, versionDirURL)
+	for _, dir := range dirs {
+		dirURL := baseURL + dir
+		sha1Urls, err := c.sha1Urls(ctx, dirURL)
 		if err != nil {
-			return xerrors.Errorf("unable to get list of sha1 files from %q: %s", versionDirURL, err)
+			return xerrors.Errorf("unable to get list of sha1 files from %q: %s", dirURL, err)
 		}
-		sha1URLs = append(sha1URLs, urls...)
-	}
 
-	var versions []Version
-	for _, sha1URL := range sha1URLs {
-		sha1, err := c.fetchSHA1(ctx, sha1URL)
-		if err != nil {
-			return xerrors.Errorf("unable to fetch sha1: %s", err)
-		}
-		if ver := versionFromSha1URL(meta.ArtifactID, sha1URL); ver != "" && len(sha1) != 0 {
-			v := Version{
-				Version: ver,
-				SHA1:    sha1,
+		// Remove the `/` suffix to correctly compare file versions with version from directory name.
+		dirVersion := strings.TrimSuffix(dir, "/")
+		var dirVersionSha1 []byte
+		var versions []Version
+		for _, sha1Url := range sha1Urls {
+			sha1, err := c.fetchSHA1(ctx, sha1Url)
+			if err != nil {
+				return xerrors.Errorf("unable to fetch sha1: %s", err)
 			}
-			versions = append(versions, v)
+			if ver := versionFromSha1URL(meta.ArtifactID, sha1Url); ver != "" && len(sha1) != 0 {
+				// Save sha1 for the file where the version is equal to the version from the directory name in order to remove duplicates later
+				// Avoid overwriting dirVersion when inserting versions into the database (sha1 is uniq blob)
+				// e.g. `cudf-0.14-cuda10-1.jar.sha1` should not overwrite `cudf-0.14.jar.sha1`
+				// https://repo.maven.apache.org/maven2/ai/rapids/cudf/0.14/
+				if ver == dirVersion {
+					dirVersionSha1 = sha1
+				} else {
+					versions = append(versions, Version{
+						Version: ver,
+						SHA1:    sha1,
+					})
+				}
+			}
 		}
+		// Remove duplicates of dirVersionSha1
+		versions = lo.Filter(versions, func(v Version, _ int) bool {
+			return !bytes.Equal(v.SHA1, dirVersionSha1)
+		})
+
+		versions = append(versions, Version{
+			Version: dirVersion,
+			SHA1:    dirVersionSha1,
+		})
+
+		foundVersions = append(foundVersions, versions...)
 	}
 
-	if len(versions) == 0 {
+	if len(foundVersions) == 0 {
 		return nil
 	}
 
 	index := &Index{
 		GroupID:     meta.GroupID,
 		ArtifactID:  meta.ArtifactID,
-		Versions:    versions,
+		Versions:    foundVersions,
 		ArchiveType: types.JarType,
 	}
 	fileName := fmt.Sprintf("%s.json", index.ArtifactID)
@@ -256,16 +277,12 @@ func (c *Crawler) sha1Urls(ctx context.Context, url string) ([]string, error) {
 	// We need to take all links.
 	var sha1URLs []string
 	d.Find("a").Each(func(i int, selection *goquery.Selection) {
-		// There are times when the file name is very long.
-		// e.g. https://repo.maven.apache.org/maven2/africa/absa/inception-oauth2-resource-server/1.0.0/
-		// We need to use `href` to make sure we use the correct filename
-		if fileName, ok := selection.Attr("href"); ok {
-			// don't include sources, test, javadocs, scaladoc files
-			if strings.HasSuffix(fileName, ".jar.sha1") && !strings.HasSuffix(fileName, "sources.jar.sha1") &&
-				!strings.HasSuffix(fileName, "test.jar.sha1") && !strings.HasSuffix(fileName, "tests.jar.sha1") &&
-				!strings.HasSuffix(fileName, "javadoc.jar.sha1") && !strings.HasSuffix(fileName, "scaladoc.jar.sha1") {
-				sha1URLs = append(sha1URLs, url+fileName)
-			}
+		link := linkFromSelection(selection)
+		// Don't include sources, test, javadocs, scaladoc files
+		if strings.HasSuffix(link, ".jar.sha1") && !strings.HasSuffix(link, "sources.jar.sha1") &&
+			!strings.HasSuffix(link, "test.jar.sha1") && !strings.HasSuffix(link, "tests.jar.sha1") &&
+			!strings.HasSuffix(link, "javadoc.jar.sha1") && !strings.HasSuffix(link, "scaladoc.jar.sha1") {
+			sha1URLs = append(sha1URLs, url+link)
 		}
 	})
 	return sha1URLs, nil
@@ -359,4 +376,20 @@ func versionFromSha1URL(artifactId, sha1URL string) string {
 		return ""
 	}
 	return strings.TrimSuffix(strings.TrimPrefix(fileName, artifactId+"-"), ".jar.sha1")
+}
+
+// linkFromSelection returns the link from goquery.Selection.
+// There are times when maven breaks `text` - it removes part of the `text` and adds the suffix `...` (`.../` for dirs).
+// e.g. `<a href="v1.1.0-226-g847ecff2d8e26f249422247d7665fe15f07b1744/">v1.1.0-226-g847ecff2d8e26f249422247d7665fe15.../</a>`
+// In this case we should take `href`.
+// But we don't need to get `href` if the text isn't broken.
+// To avoid checking unnecessary links.
+// e.g. `<pre id="contents"><a href="https://repo.maven.apache.org/maven2/abbot/">../</a>`
+func linkFromSelection(selection *goquery.Selection) string {
+	link := selection.Text()
+	// maven uses `.../` suffix for dirs and `...` suffix for files.
+	if href, ok := selection.Attr("href"); ok && (strings.HasSuffix(link, ".../") || (strings.HasSuffix(link, "..."))) {
+		link = href
+	}
+	return link
 }
