@@ -50,13 +50,12 @@ jobs:
       # required for testing in forks
       - name: GH repo to lower case
         id: github-repo-lower-case
-        uses: ASzc/change-string-case-action@v6
-        with:
-          string: ${{ github.repository }}
+        run: |
+          echo "lowercase_repo=$(echo "${{ github.repository }}" | tr '[:upper:]' '[:lower:]')" >> $GITHUB_OUTPUT
 
       - name: Upload assets to GHCR
         run: |
           oras version
           oras push --artifact-type application/vnd.aquasec.trivy.config.v1+json \
-          ghcr.io/${{ steps.github-repo-lower-case.outputs.lowercase }}:${DB_VERSION} \
+          ghcr.io/${{ steps.github-repo-lower-case.outputs.lowercase_repo }}:${DB_VERSION} \
           javadb.tar.gz:application/vnd.aquasec.trivy.javadb.layer.v1.tar+gzip
