@@ -48,7 +48,8 @@ jobs:
 
       - name: Upload assets to GHCR
         run: |
+          lowercase_repo=$(echo "${{ github.repository }}" | tr '[:upper:]' '[:lower:]')
           oras version
           oras push --artifact-type application/vnd.aquasec.trivy.config.v1+json \
-          ghcr.io/${{ github.repository }}:${DB_VERSION} \
+          ghcr.io/${lowercase_repo}:${DB_VERSION} \
           javadb.tar.gz:application/vnd.aquasec.trivy.javadb.layer.v1.tar+gzip
