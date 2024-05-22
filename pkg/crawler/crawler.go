@@ -141,6 +141,12 @@ func (c *Crawler) Visit(ctx context.Context, url string) error {
 	}
 	defer resp.Body.Close()
 
+	// There are cases when url doesn't exist
+	// e.g. https://repo.maven.apache.org/maven2/io/springboot/ai/spring-ai-anthropic/
+	if resp.StatusCode != http.StatusOK {
+		return nil
+	}
+
 	d, err := goquery.NewDocumentFromReader(resp.Body)
 	if err != nil {
 		return xerrors.Errorf("can't create new goquery doc: %w", err)
@@ -306,6 +312,12 @@ func (c *Crawler) parseMetadata(ctx context.Context, url string) (*Metadata, err
 		return nil, xerrors.Errorf("http get error (%s): %w", url, err)
 	}
 	defer resp.Body.Close()
+
+	// There are cases when metadata.xml file doesn't exist
+	// e.g. https://repo.maven.apache.org/maven2/io/springboot/ai/spring-ai-vertex-ai-gemini-spring-boot-starter/maven-metadata.xml
+	if resp.StatusCode != http.StatusOK {
+		return nil, nil
+	}
 
 	var meta Metadata
 	if err = xml.NewDecoder(resp.Body).Decode(&meta); err != nil {
