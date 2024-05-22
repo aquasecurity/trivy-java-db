@@ -23,7 +23,7 @@ import (
 	"github.com/aquasecurity/trivy-java-db/pkg/types"
 )
 
-const mavenRepoURL = "https://repo.maven.apache.org/maven2/"
+const mavenRepoURL = "https://repo.maven.apache.org/maven2/io/springboot/ai/"
 
 type Crawler struct {
 	dir  string
@@ -306,6 +306,12 @@ func (c *Crawler) parseMetadata(ctx context.Context, url string) (*Metadata, err
 		return nil, xerrors.Errorf("http get error (%s): %w", url, err)
 	}
 	defer resp.Body.Close()
+
+	// There are cases when metadata.xml file doesn't exist
+	// e.g. https://repo.maven.apache.org/maven2/io/springboot/ai/spring-ai-vertex-ai-gemini-spring-boot-starter/maven-metadata.xml
+	if resp.StatusCode != http.StatusOK {
+		return nil, nil
+	}
 
 	var meta Metadata
 	if err = xml.NewDecoder(resp.Body).Decode(&meta); err != nil {
