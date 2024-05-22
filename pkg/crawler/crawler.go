@@ -141,6 +141,12 @@ func (c *Crawler) Visit(ctx context.Context, url string) error {
 	}
 	defer resp.Body.Close()
 
+	// There are cases when url doesn't exist
+	// e.g. https://repo.maven.apache.org/maven2/io/springboot/ai/
+	if resp.StatusCode != http.StatusOK {
+		return nil
+	}
+
 	d, err := goquery.NewDocumentFromReader(resp.Body)
 	if err != nil {
 		return xerrors.Errorf("can't create new goquery doc: %w", err)
