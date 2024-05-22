@@ -142,7 +142,7 @@ func (c *Crawler) Visit(ctx context.Context, url string) error {
 	defer resp.Body.Close()
 
 	// There are cases when url doesn't exist
-	// e.g. https://repo.maven.apache.org/maven2/io/springboot/ai/
+	// e.g. https://repo.maven.apache.org/maven2/io/springboot/ai/spring-ai-anthropic/
 	if resp.StatusCode != http.StatusOK {
 		return nil
 	}
