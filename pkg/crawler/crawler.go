@@ -23,7 +23,7 @@ import (
 	"github.com/aquasecurity/trivy-java-db/pkg/types"
 )
 
-const mavenRepoURL = "https://repo.maven.apache.org/maven2/io/springboot/ai/"
+const mavenRepoURL = "https://repo.maven.apache.org/maven2/"
 
 type Crawler struct {
 	dir  string
