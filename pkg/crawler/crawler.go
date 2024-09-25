@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/PuerkitoBio/goquery"
 	"github.com/hashicorp/go-retryablehttp"
@@ -47,6 +48,7 @@ func NewCrawler(opt Option) Crawler {
 	client := retryablehttp.NewClient()
 	client.RetryMax = 10
 	client.Logger = nil
+	client.RetryWaitMin = 10 * time.Second
 
 	if opt.RootUrl == "" {
 		opt.RootUrl = mavenRepoURL
