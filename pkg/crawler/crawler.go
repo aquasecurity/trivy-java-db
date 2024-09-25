@@ -32,6 +32,7 @@ type Crawler struct {
 	rootUrl         string
 	wg              sync.WaitGroup
 	urlCh           chan string
+	errOnce         sync.Once
 	limit           *semaphore.Weighted
 	wrongSHA1Values []string
 }
@@ -61,6 +62,7 @@ func NewCrawler(opt Option) Crawler {
 		rootUrl: opt.RootUrl,
 		urlCh:   make(chan string, opt.Limit*10),
 		limit:   semaphore.NewWeighted(opt.Limit),
+		errOnce: sync.Once{},
 	}
 }
 
@@ -101,7 +103,13 @@ func (c *Crawler) Crawl(ctx context.Context) error {
 				defer c.limit.Release(1)
 				defer c.wg.Done()
 				if err := c.Visit(ctx, url); err != nil {
-					errCh <- xerrors.Errorf("visit error: %w", err)
+					// There might be a case where we get 2 errors at the same time.
+					// In this case we close `errCh` after reading the first error
+					// and get panic for the second error
+					// That's why we need to return the error once.
+					c.errOnce.Do(func() {
+						errCh <- xerrors.Errorf("visit error: %w", err)
+					})
 				}
 			}(url)
 		}
