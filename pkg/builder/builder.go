@@ -3,7 +3,7 @@ package builder
 import (
 	"encoding/json"
 	"io"
-	"log"
+	"log/slog"
 	"path/filepath"
 	"time"
 
@@ -40,7 +40,7 @@ func (b *Builder) Build(cacheDir string) error {
 		return xerrors.Errorf("count error: %w", err)
 	}
 	bar := pb.StartNew(count)
-	defer log.Println("Build completed")
+	defer slog.Info("Build completed")
 	defer bar.Finish()
 
 	var indexes []types.Index

@@ -2,12 +2,13 @@ package fileutil
 
 import (
 	"encoding/json"
-	"golang.org/x/xerrors"
 	"io"
 	"io/fs"
-	"log"
+	"log/slog"
 	"os"
 	"path/filepath"
+
+	"golang.org/x/xerrors"
 )
 
 func Walk(root string, walkFn func(r io.Reader, path string) error) error {
@@ -24,7 +25,7 @@ func Walk(root string, walkFn func(r io.Reader, path string) error) error {
 		}
 
 		if info.Size() == 0 {
-			log.Printf("invalid size: %s\n", path)
+			slog.Error("Invalid size", slog.String("path", path))
 			return nil
 		}
 

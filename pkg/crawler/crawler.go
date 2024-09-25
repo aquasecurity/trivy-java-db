@@ -7,7 +7,7 @@ import (
 	"encoding/xml"
 	"fmt"
 	"io"
-	"log"
+	"log/slog"
 	"net/http"
 	"path/filepath"
 	"strings"
@@ -47,7 +47,7 @@ type Option struct {
 func NewCrawler(opt Option) Crawler {
 	client := retryablehttp.NewClient()
 	client.RetryMax = 10
-	client.Logger = nil
+	client.Logger = slog.Default()
 	client.RetryWaitMin = 10 * time.Second
 
 	if opt.RootUrl == "" {
@@ -55,7 +55,7 @@ func NewCrawler(opt Option) Crawler {
 	}
 
 	indexDir := filepath.Join(opt.CacheDir, "indexes")
-	log.Printf("Index dir %s", indexDir)
+	slog.Info("Index dir", slog.String("path", indexDir))
 
 	return Crawler{
 		dir:  indexDir,
@@ -69,7 +69,7 @@ func NewCrawler(opt Option) Crawler {
 }
 
 func (c *Crawler) Crawl(ctx context.Context) error {
-	log.Println("Crawl maven repository and save indexes")
+	slog.Info("Crawl maven repository and save indexes")
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 
@@ -95,7 +95,7 @@ func (c *Crawler) Crawl(ctx context.Context) error {
 		for url := range c.urlCh {
 			count++
 			if count%1000 == 0 {
-				log.Printf("Count: %d", count)
+				slog.Info("Indexed digests", slog.Int("count", count))
 			}
 			if err := c.limit.Acquire(ctx, 1); err != nil {
 				errCh <- xerrors.Errorf("semaphore acquire error: %w", err)
@@ -130,11 +130,10 @@ loop:
 
 		}
 	}
-	log.Println("Crawl completed")
+	slog.Info("Crawl completed")
 	if len(c.wrongSHA1Values) > 0 {
-		log.Println("Wrong sha1 files:")
 		for _, wrongSHA1 := range c.wrongSHA1Values {
-			log.Println(wrongSHA1)
+			slog.Warn("Wrong SHA1 file", slog.String("error", wrongSHA1))
 		}
 	}
 	return nil
