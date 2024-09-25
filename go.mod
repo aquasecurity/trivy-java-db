@@ -1,6 +1,6 @@
 module github.com/aquasecurity/trivy-java-db
 
-go 1.18
+go 1.22.7
 
 require (
 	github.com/PuerkitoBio/goquery v1.5.1

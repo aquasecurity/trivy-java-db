@@ -2,7 +2,8 @@ package main
 
 import (
 	"context"
-	"log"
+	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
 
@@ -18,7 +19,8 @@ import (
 
 func main() {
 	if err := rootCmd.Execute(); err != nil {
-		log.Fatalf("%+v", err)
+		slog.Error(fmt.Sprintf("%+v", err))
+		os.Exit(1)
 	}
 }
 
@@ -50,7 +52,7 @@ var (
 func init() {
 	userCacheDir, err := os.UserCacheDir()
 	if err != nil {
-		log.Fatal(err)
+		panic(err)
 	}
 
 	rootCmd.PersistentFlags().StringVar(&cacheDir, "cache-dir", filepath.Join(userCacheDir, "trivy-java-db"),
@@ -59,6 +61,8 @@ func init() {
 
 	rootCmd.AddCommand(crawlCmd)
 	rootCmd.AddCommand(buildCmd)
+
+	slog.SetLogLoggerLevel(slog.LevelInfo) // TODO: add --debug
 }
 
 func crawl(ctx context.Context) error {
@@ -77,7 +81,7 @@ func build() error {
 		return xerrors.Errorf("db reset error: %w", err)
 	}
 	dbDir := filepath.Join(cacheDir, "db")
-	log.Printf("Database path: %s", dbDir)
+	slog.Info("Database", slog.String("path", dbDir))
 	dbc, err := db.New(dbDir)
 	if err != nil {
 		return xerrors.Errorf("db create error: %w", err)
