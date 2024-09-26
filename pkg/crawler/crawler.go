@@ -49,6 +49,20 @@ func NewCrawler(opt Option) Crawler {
 	client.RetryMax = 10
 	client.Logger = slog.Default()
 	client.RetryWaitMin = 10 * time.Second
+	client.Backoff = func(min, max time.Duration, attemptNum int, resp *http.Response) time.Duration {
+		// Maven Central returns "Retry-After: 0" for some reason, resulting in an immediate retry.
+		if resp.Header.Get("Retry-After") == "0" {
+			resp.Header.Del("Retry-After")
+		}
+		return retryablehttp.DefaultBackoff(min, max, attemptNum, resp)
+	}
+	client.ErrorHandler = func(resp *http.Response, err error, numTries int) (*http.Response, error) {
+		if resp.StatusCode != http.StatusOK {
+			slog.Error("HTTP error", slog.String("url", resp.Request.URL.String()), slog.Int("num_tries", numTries),
+				slog.Int("status_code", resp.StatusCode))
+		}
+		return resp, err
+	}
 
 	if opt.RootUrl == "" {
 		opt.RootUrl = mavenRepoURL
