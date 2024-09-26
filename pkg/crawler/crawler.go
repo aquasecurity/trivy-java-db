@@ -49,19 +49,21 @@ func NewCrawler(opt Option) Crawler {
 	client.RetryMax = 10
 	client.Logger = slog.Default()
 	client.RetryWaitMin = 10 * time.Second
-	client.Backoff = func(min, max time.Duration, attemptNum int, resp *http.Response) time.Duration {
-		// Maven Central returns "Retry-After: 0" for some reason, resulting in an immediate retry.
-		if resp.Header.Get("Retry-After") == "0" {
-			resp.Header.Del("Retry-After")
+	client.RetryWaitMax = 1 * time.Minute
+	client.Backoff = retryablehttp.LinearJitterBackoff
+	client.ResponseLogHook = func(_ retryablehttp.Logger, resp *http.Response) {
+		if resp.StatusCode != http.StatusOK {
+			slog.Warn("Unexpected http response", slog.String("url", resp.Request.URL.String()), slog.String("status", resp.Status))
 		}
-		return retryablehttp.DefaultBackoff(min, max, attemptNum, resp)
 	}
 	client.ErrorHandler = func(resp *http.Response, err error, numTries int) (*http.Response, error) {
-		if resp.StatusCode != http.StatusOK {
-			slog.Error("HTTP error", slog.String("url", resp.Request.URL.String()), slog.Int("num_tries", numTries),
-				slog.Int("status_code", resp.StatusCode))
+		logger := slog.With(slog.String("url", resp.Request.URL.String()), slog.Int("status_code", resp.StatusCode),
+			slog.Int("num_tries", numTries))
+		if err != nil {
+			logger = logger.With(slog.String("error", err.Error()))
 		}
-		return resp, err
+		logger.Error("HTTP request failed after retries")
+		return resp, xerrors.Errorf("HTTP request failed after retries: %w", err)
 	}
 
 	if opt.RootUrl == "" {
