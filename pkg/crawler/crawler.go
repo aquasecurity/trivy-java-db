@@ -9,7 +9,6 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
-	"net/http/httputil"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -59,9 +58,8 @@ func NewCrawler(opt Option) Crawler {
 	}
 	client.ErrorHandler = func(resp *http.Response, err error, numTries int) (*http.Response, error) {
 		if resp.StatusCode != http.StatusOK {
-			b, _ := httputil.DumpResponse(resp, false)
 			slog.Error("HTTP error", slog.String("url", resp.Request.URL.String()), slog.Int("num_tries", numTries),
-				slog.Int("status_code", resp.StatusCode), slog.String("header", string(b)))
+				slog.Int("status_code", resp.StatusCode))
 		}
 		return resp, err
 	}
