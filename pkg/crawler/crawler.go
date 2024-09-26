@@ -48,8 +48,8 @@ func NewCrawler(opt Option) Crawler {
 	client := retryablehttp.NewClient()
 	client.RetryMax = 10
 	client.Logger = slog.Default()
-	client.RetryWaitMin = 10 * time.Second
-	client.RetryWaitMax = 1 * time.Minute
+	client.RetryWaitMin = 1 * time.Minute
+	client.RetryWaitMax = 5 * time.Minute
 	client.Backoff = retryablehttp.LinearJitterBackoff
 	client.ResponseLogHook = func(_ retryablehttp.Logger, resp *http.Response) {
 		if resp.StatusCode != http.StatusOK {
