@@ -56,9 +56,12 @@ func NewCrawler(opt Option) Crawler {
 		return retryablehttp.DefaultBackoff(min, max, attemptNum, resp)
 	}
 	client.ErrorHandler = func(resp *http.Response, err error, numTries int) (*http.Response, error) {
-		if resp.StatusCode != http.StatusOK {
+		if resp != nil && resp.StatusCode != http.StatusOK {
 			slog.Error("HTTP error", slog.String("url", resp.Request.URL.String()), slog.Int("num_tries", numTries),
 				slog.Int("status_code", resp.StatusCode))
+		}
+		if err != nil {
+			slog.Error("HTTP error", slog.Int("num_tries", numTries), slog.String("error", err.Error()))
 		}
 		return resp, err
 	}
@@ -85,7 +88,7 @@ func (c *Crawler) Crawl(ctx context.Context) error {
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 
-	errCh := make(chan error, 1)
+	errCh := make(chan error)
 	defer close(errCh)
 
 	// Add a root url
@@ -117,10 +120,8 @@ func (c *Crawler) Crawl(ctx context.Context) error {
 				defer c.limit.Release(1)
 				defer c.wg.Done()
 				if err := c.Visit(ctx, url); err != nil {
-					select {
-					case <-ctx.Done(): // to prevent an error from being written to a closed channel
-						return
-					case errCh <- err:
+					if ctx.Err() == nil {
+						errCh <- err
 						return
 					}
 				}
