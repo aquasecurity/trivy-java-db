@@ -57,8 +57,12 @@ func NewCrawler(opt Option) Crawler {
 		}
 	}
 	client.ErrorHandler = func(resp *http.Response, err error, numTries int) (*http.Response, error) {
-		logger := slog.With(slog.String("url", resp.Request.URL.String()), slog.Int("status_code", resp.StatusCode),
-			slog.Int("num_tries", numTries))
+		logger := &slog.Logger{}
+		if resp != nil {
+			logger = slog.With(slog.String("url", resp.Request.URL.String()), slog.Int("status_code", resp.StatusCode),
+				slog.Int("num_tries", numTries))
+		}
+
 		if err != nil {
 			logger = logger.With(slog.String("error", err.Error()))
 		}
@@ -120,8 +124,11 @@ func (c *Crawler) Crawl(ctx context.Context) error {
 				defer c.limit.Release(1)
 				defer c.wg.Done()
 				if err := c.Visit(ctx, url); err != nil {
-					if ctx.Err() == nil {
-						errCh <- err
+					select {
+					// Context can be canceled if we receive an error from another Visit function.
+					case <-ctx.Done():
+						return
+					case errCh <- err:
 						return
 					}
 				}
