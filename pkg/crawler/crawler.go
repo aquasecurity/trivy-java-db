@@ -208,8 +208,8 @@ func (c *Crawler) Visit(ctx context.Context, url string) error {
 			// Context can be canceled if we receive an error from another Visit function.
 			case <-ctx.Done():
 				return
-			default:
-				c.urlCh <- url + child
+			case c.urlCh <- url + child:
+				continue
 			}
 		}
 	}()
