@@ -57,7 +57,7 @@ func NewCrawler(opt Option) Crawler {
 		}
 	}
 	client.ErrorHandler = func(resp *http.Response, err error, numTries int) (*http.Response, error) {
-		logger := &slog.Logger{}
+		logger := slog.Default()
 		if resp != nil {
 			logger = slog.With(slog.String("url", resp.Request.URL.String()), slog.Int("status_code", resp.StatusCode),
 				slog.Int("num_tries", numTries))
