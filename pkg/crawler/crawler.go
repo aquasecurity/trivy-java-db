@@ -34,7 +34,6 @@ type Crawler struct {
 	rootUrl         string
 	wg              sync.WaitGroup
 	urlCh           chan string
-	errOnce         sync.Once
 	limit           *semaphore.Weighted
 	wrongSHA1Values []string
 }
@@ -58,8 +57,12 @@ func NewCrawler(opt Option) Crawler {
 		}
 	}
 	client.ErrorHandler = func(resp *http.Response, err error, numTries int) (*http.Response, error) {
-		logger := slog.With(slog.String("url", resp.Request.URL.String()), slog.Int("status_code", resp.StatusCode),
-			slog.Int("num_tries", numTries))
+		logger := slog.Default()
+		if resp != nil {
+			logger = slog.With(slog.String("url", resp.Request.URL.String()), slog.Int("status_code", resp.StatusCode),
+				slog.Int("num_tries", numTries))
+		}
+
 		if err != nil {
 			logger = logger.With(slog.String("error", err.Error()))
 		}
@@ -81,7 +84,6 @@ func NewCrawler(opt Option) Crawler {
 		rootUrl: opt.RootUrl,
 		urlCh:   make(chan string, opt.Limit*10),
 		limit:   semaphore.NewWeighted(opt.Limit),
-		errOnce: sync.Once{},
 	}
 }
 
@@ -122,13 +124,13 @@ func (c *Crawler) Crawl(ctx context.Context) error {
 				defer c.limit.Release(1)
 				defer c.wg.Done()
 				if err := c.Visit(ctx, url); err != nil {
-					// There might be a case where we get 2 errors at the same time.
-					// In this case we close `errCh` after reading the first error
-					// and get panic for the second error
-					// That's why we need to return the error once.
-					c.errOnce.Do(func() {
-						errCh <- xerrors.Errorf("visit error: %w", err)
-					})
+					select {
+					// Context can be canceled if we receive an error from another Visit function.
+					case <-ctx.Done():
+						return
+					case errCh <- err:
+						return
+					}
 				}
 			}(url)
 		}
@@ -210,8 +212,8 @@ func (c *Crawler) Visit(ctx context.Context, url string) error {
 			// Context can be canceled if we receive an error from another Visit function.
 			case <-ctx.Done():
 				return
-			default:
-				c.urlCh <- url + child
+			case c.urlCh <- url + child:
+				continue
 			}
 		}
 	}()
