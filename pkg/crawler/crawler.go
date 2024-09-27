@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"math/rand"
 	"net/http"
 	"path/filepath"
 	"strings"
@@ -48,20 +49,22 @@ func NewCrawler(opt Option) Crawler {
 	client := retryablehttp.NewClient()
 	client.RetryMax = 10
 	client.Logger = slog.Default()
-	client.RetryWaitMin = 10 * time.Second
-	client.Backoff = func(min, max time.Duration, attemptNum int, resp *http.Response) time.Duration {
-		// Maven Central returns "Retry-After: 0" for some reason, resulting in an immediate retry.
-		if resp.Header.Get("Retry-After") == "0" {
-			resp.Header.Del("Retry-After")
+	client.RetryWaitMin = 1 * time.Minute
+	client.RetryWaitMax = 5 * time.Minute
+	client.Backoff = retryablehttp.LinearJitterBackoff
+	client.ResponseLogHook = func(_ retryablehttp.Logger, resp *http.Response) {
+		if resp.StatusCode != http.StatusOK {
+			slog.Warn("Unexpected http response", slog.String("url", resp.Request.URL.String()), slog.String("status", resp.Status))
 		}
-		return retryablehttp.DefaultBackoff(min, max, attemptNum, resp)
 	}
 	client.ErrorHandler = func(resp *http.Response, err error, numTries int) (*http.Response, error) {
-		if resp.StatusCode != http.StatusOK {
-			slog.Error("HTTP error", slog.String("url", resp.Request.URL.String()), slog.Int("num_tries", numTries),
-				slog.Int("status_code", resp.StatusCode))
+		logger := slog.With(slog.String("url", resp.Request.URL.String()), slog.Int("status_code", resp.StatusCode),
+			slog.Int("num_tries", numTries))
+		if err != nil {
+			logger = logger.With(slog.String("error", err.Error()))
 		}
-		return resp, err
+		logger.Error("HTTP request failed after retries")
+		return resp, xerrors.Errorf("HTTP request failed after retries: %w", err)
 	}
 
 	if opt.RootUrl == "" {
@@ -154,13 +157,9 @@ loop:
 }
 
 func (c *Crawler) Visit(ctx context.Context, url string) error {
-	req, err := retryablehttp.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	resp, err := c.httpGet(ctx, url)
 	if err != nil {
-		return xerrors.Errorf("unable to new HTTP request: %w", err)
-	}
-	resp, err := c.http.Do(req)
-	if err != nil {
-		return xerrors.Errorf("http get error (%s): %w", url, err)
+		return xerrors.Errorf("http get error: %w", err)
 	}
 	defer resp.Body.Close()
 
@@ -288,13 +287,9 @@ func (c *Crawler) crawlSHA1(ctx context.Context, baseURL string, meta *Metadata,
 }
 
 func (c *Crawler) sha1Urls(ctx context.Context, url string) ([]string, error) {
-	req, err := retryablehttp.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	resp, err := c.httpGet(ctx, url)
 	if err != nil {
-		return nil, xerrors.Errorf("unable to new HTTP request: %w", err)
-	}
-	resp, err := c.http.Do(req)
-	if err != nil {
-		return nil, xerrors.Errorf("http get error (%s): %w", url, err)
+		return nil, xerrors.Errorf("http get error: %w", err)
 	}
 	defer func() { _ = resp.Body.Close() }()
 
@@ -326,13 +321,9 @@ func (c *Crawler) parseMetadata(ctx context.Context, url string) (*Metadata, err
 		return nil, nil
 	}
 
-	req, err := retryablehttp.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	resp, err := c.httpGet(ctx, url)
 	if err != nil {
-		return nil, xerrors.Errorf("unable to new HTTP request: %w", err)
-	}
-	resp, err := c.http.Do(req)
-	if err != nil {
-		return nil, xerrors.Errorf("http get error (%s): %w", url, err)
+		return nil, xerrors.Errorf("http get error: %w", err)
 	}
 	defer resp.Body.Close()
 
@@ -361,13 +352,9 @@ func (c *Crawler) parseMetadata(ctx context.Context, url string) (*Metadata, err
 }
 
 func (c *Crawler) fetchSHA1(ctx context.Context, url string) ([]byte, error) {
-	req, err := retryablehttp.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	resp, err := c.httpGet(ctx, url)
 	if err != nil {
-		return nil, xerrors.Errorf("unable to new HTTP request: %w", err)
-	}
-	resp, err := c.http.Do(req)
-	if err != nil {
-		return nil, xerrors.Errorf("http get error (%s): %w", url, err)
+		return nil, xerrors.Errorf("http get error: %w", err)
 	}
 	defer func() { _ = resp.Body.Close() }()
 
@@ -404,6 +391,27 @@ func (c *Crawler) fetchSHA1(ctx context.Context, url string) ([]byte, error) {
 		return nil, nil
 	}
 	return sha1b, nil
+}
+
+func (c *Crawler) httpGet(ctx context.Context, url string) (*http.Response, error) {
+	// Sleep for a while to avoid 429 error
+	randomSleep()
+
+	req, err := retryablehttp.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		return nil, xerrors.Errorf("unable to create a HTTP request: %w", err)
+	}
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return nil, xerrors.Errorf("http error (%s): %w", url, err)
+	}
+	return resp, nil
+}
+
+func randomSleep() {
+	// Seed rand
+	r := rand.New(rand.NewSource(int64(time.Now().Nanosecond())))
+	time.Sleep(time.Duration(r.Float64() * float64(100*time.Millisecond)))
 }
 
 func versionFromSha1URL(artifactId, sha1URL string) string {
