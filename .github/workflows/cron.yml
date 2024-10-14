@@ -53,6 +53,11 @@ jobs:
           username: ${{ secrets.ECR_ACCESS_KEY_ID }}
           password: ${{ secrets.ECR_SECRET_ACCESS_KEY }}
 
+      - name: Install oras
+        run: |
+          curl -LO https://github.com/oras-project/oras/releases/download/v1.2.0/oras_1.2.0_linux_amd64.tar.gz
+          tar -xvf ./oras_1.2.0_linux_amd64.tar.gz          
+
       - name: Upload assets to GHCR and ECR Public
         run: |
           lowercase_repo=$(echo "${{ github.repository }}" | tr '[:upper:]' '[:lower:]')
