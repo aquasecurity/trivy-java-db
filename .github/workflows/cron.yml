@@ -39,6 +39,12 @@ jobs:
       - name: Move DB
         run: mv cache/db/javadb.tar.gz .
 
+      - name: Login to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USER }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
       - name: Login to GitHub Packages Container registry
         uses: docker/login-action@v3
         with:
@@ -58,26 +64,44 @@ jobs:
           curl -LO https://github.com/oras-project/oras/releases/download/v1.2.0/oras_1.2.0_linux_amd64.tar.gz
           tar -xvf ./oras_1.2.0_linux_amd64.tar.gz          
 
-      - name: Upload assets to GHCR and ECR Public
+      - name: Upload assets to registries
         run: |
           lowercase_repo=$(echo "${{ github.repository }}" | tr '[:upper:]' '[:lower:]')
           ./oras version
           
-          # Define an array of registry base URLs
-          registries=(
-            "ghcr.io"
-            "public.ecr.aws"
-          )
-
-          # Loop through each registry and push the artifact
-          for registry in "${registries[@]}"; do
-            full_registry_url="${registry}/${lowercase_repo}"
-            ./oras push --artifact-type application/vnd.aquasec.trivy.config.v1+json \
-            "${full_registry_url}:${DB_VERSION}" \
-            javadb.tar.gz:application/vnd.aquasec.trivy.javadb.layer.v1.tar+gzip
+          echo "Starting artifact upload process..."
           
-            echo "Pushed to ${full_registry_url}"
+          # Define an array of registry base URLs and their corresponding repository names
+          declare -A registries=(
+            ["ghcr.io"]="${lowercase_repo}"
+            ["public.ecr.aws"]="${lowercase_repo}"
+            ["docker.io"]="${lowercase_repo}"
+          )
+          
+          # Special case for docker.io if the organization is 'aquasecurity'
+          if [[ "${lowercase_repo}" == "aquasecurity/"* ]]; then
+            registries["docker.io"]="aquasec/${lowercase_repo#aquasecurity/}"
+            echo "Docker Hub repository adjusted for aquasecurity: ${registries["docker.io"]}"
+          fi
+          
+          # Loop through each registry and push the artifact
+          for registry in "${!registries[@]}"; do
+            repo_name=${registries[$registry]}
+            full_registry_url="${registry}/${repo_name}"
+            echo "Processing registry: ${full_registry_url}"
+        
+            if ./oras push --artifact-type application/vnd.aquasec.trivy.config.v1+json \
+              "${full_registry_url}:${DB_VERSION}" \
+              javadb.tar.gz:application/vnd.aquasec.trivy.javadb.layer.v1.tar+gzip; then
+              echo "Successfully pushed to ${full_registry_url}:${DB_VERSION}"
+            else
+              echo "Failed to push to ${full_registry_url}:${DB_VERSION}"
+              exit 1
+            fi
           done
+          
+          echo "Artifact upload process completed."
+
 
       - name: Microsoft Teams Notification
         ## Until the PR with the fix for the AdaptivCard version is merged yet
