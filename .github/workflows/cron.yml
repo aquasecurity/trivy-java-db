@@ -13,7 +13,7 @@ permissions:
 jobs:
   build:
     name: Build DB
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - name: Check out code into the Go module directory
         uses: actions/checkout@v2
@@ -53,10 +53,15 @@ jobs:
           username: ${{ secrets.ECR_ACCESS_KEY_ID }}
           password: ${{ secrets.ECR_SECRET_ACCESS_KEY }}
 
+      - name: Install oras
+        run: |
+          curl -LO https://github.com/oras-project/oras/releases/download/v1.2.0/oras_1.2.0_linux_amd64.tar.gz
+          tar -xvf ./oras_1.2.0_linux_amd64.tar.gz          
+
       - name: Upload assets to GHCR and ECR Public
         run: |
           lowercase_repo=$(echo "${{ github.repository }}" | tr '[:upper:]' '[:lower:]')
-          oras version
+          ./oras version
           
           # Define an array of registry base URLs
           registries=(
@@ -67,7 +72,7 @@ jobs:
           # Loop through each registry and push the artifact
           for registry in "${registries[@]}"; do
             full_registry_url="${registry}/${lowercase_repo}"
-            oras push --artifact-type application/vnd.aquasec.trivy.config.v1+json \
+            ./oras push --artifact-type application/vnd.aquasec.trivy.config.v1+json \
             "${full_registry_url}:${DB_VERSION}" \
             javadb.tar.gz:application/vnd.aquasec.trivy.javadb.layer.v1.tar+gzip
           
