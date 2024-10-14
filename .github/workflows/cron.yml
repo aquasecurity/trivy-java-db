@@ -61,7 +61,7 @@ jobs:
       - name: Upload assets to GHCR and ECR Public
         run: |
           lowercase_repo=$(echo "${{ github.repository }}" | tr '[:upper:]' '[:lower:]')
-          oras version
+          ./oras version
           
           # Define an array of registry base URLs
           registries=(
@@ -72,7 +72,7 @@ jobs:
           # Loop through each registry and push the artifact
           for registry in "${registries[@]}"; do
             full_registry_url="${registry}/${lowercase_repo}"
-            oras push --artifact-type application/vnd.aquasec.trivy.config.v1+json \
+            ./oras push --artifact-type application/vnd.aquasec.trivy.config.v1+json \
             "${full_registry_url}:${DB_VERSION}" \
             javadb.tar.gz:application/vnd.aquasec.trivy.javadb.layer.v1.tar+gzip
           
