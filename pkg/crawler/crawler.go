@@ -227,6 +227,9 @@ func (c *Crawler) Visit(ctx context.Context, url string) error {
 	return nil
 }
 
+// To avoid a large number of requests to the server, we should skip already saved artifacts (if the start date is specified).
+// P.S. We do not need to check for updates, since artifacts are immutable
+// see https://central.sonatype.org/publish/requirements/immutability
 func (c *Crawler) skipChildLink(selection *goquery.Selection) bool {
 	if c.lastUpdate.IsZero() {
 		return false
