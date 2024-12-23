@@ -71,8 +71,9 @@ func crawl(ctx context.Context) error {
 		CacheDir: cacheDir,
 	}
 
-	if db.Exists(cacheDir) {
-		t, err := db.GetMetadataUpdatedAt(cacheDir)
+	dbDir := db.Dir(cacheDir)
+	if db.Exists(dbDir) {
+		t, err := db.GetMetadataUpdatedAt(dbDir)
 		if err != nil {
 			return xerrors.Errorf("unable to get metadata UpdatedAt time: %w", err)
 		}
@@ -89,7 +90,7 @@ func crawl(ctx context.Context) error {
 }
 
 func build() error {
-	dbDir := filepath.Join(cacheDir, "db")
+	dbDir := db.Dir(cacheDir)
 	slog.Info("Database", slog.String("path", dbDir))
 	dbc, err := db.New(dbDir)
 	if err != nil {
