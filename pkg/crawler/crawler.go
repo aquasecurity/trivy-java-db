@@ -28,8 +28,9 @@ import (
 const mavenRepoURL = "https://repo.maven.apache.org/maven2/"
 
 type Crawler struct {
-	dir  string
-	http *retryablehttp.Client
+	dir        string
+	http       *retryablehttp.Client
+	lastUpdate time.Time
 
 	rootUrl         string
 	wg              sync.WaitGroup
@@ -39,9 +40,10 @@ type Crawler struct {
 }
 
 type Option struct {
-	Limit    int64
-	RootUrl  string
-	CacheDir string
+	Limit      int64
+	RootUrl    string
+	CacheDir   string
+	LastUpdate time.Time
 }
 
 func NewCrawler(opt Option) Crawler {
@@ -78,8 +80,9 @@ func NewCrawler(opt Option) Crawler {
 	slog.Info("Index dir", slog.String("path", indexDir))
 
 	return Crawler{
-		dir:  indexDir,
-		http: client,
+		dir:        indexDir,
+		http:       client,
+		lastUpdate: opt.LastUpdate,
 
 		rootUrl: opt.RootUrl,
 		urlCh:   make(chan string, opt.Limit*10),
@@ -187,7 +190,10 @@ func (c *Crawler) Visit(ctx context.Context, url string) error {
 			// only `../` and dirs have `/` suffix. We don't need to check other files.
 			return
 		}
-		children = append(children, link)
+		if !c.skipChildLink(selection) {
+			children = append(children, link)
+		}
+
 	})
 
 	if foundMetadata {
@@ -219,6 +225,24 @@ func (c *Crawler) Visit(ctx context.Context, url string) error {
 	}()
 
 	return nil
+}
+
+func (c *Crawler) skipChildLink(selection *goquery.Selection) bool {
+	if c.lastUpdate.IsZero() {
+		return false
+	}
+
+	fields := strings.Fields(selection.Get(0).NextSibling.Data)
+	if len(fields) == 0 || fields[0] == "-" {
+		return false
+	}
+	linkTime, err := time.Parse("2006-01-02", fields[0])
+	if err != nil {
+		slog.Warn("Unable to parse link time", slog.String("time", fields[0]))
+		return false
+	}
+
+	return linkTime.Before(c.lastUpdate)
 }
 
 func (c *Crawler) crawlSHA1(ctx context.Context, baseURL string, meta *Metadata, dirs []string) error {

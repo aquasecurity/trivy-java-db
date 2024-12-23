@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"time"
 
 	"github.com/spf13/cobra"
 	"golang.org/x/xerrors"
@@ -26,8 +27,9 @@ func main() {
 
 var (
 	// Used for flags.
-	cacheDir string
-	limit    int
+	cacheDir   string
+	limit      int
+	lastUpdate string
 
 	rootCmd = &cobra.Command{
 		Use:   "trivy-java-db",
@@ -58,6 +60,7 @@ func init() {
 	rootCmd.PersistentFlags().StringVar(&cacheDir, "cache-dir", filepath.Join(userCacheDir, "trivy-java-db"),
 		"cache dir")
 	rootCmd.PersistentFlags().IntVar(&limit, "limit", 300, "max parallelism")
+	rootCmd.PersistentFlags().StringVar(&lastUpdate, "last-update", "", "last update date in `YYYY-MM-DD` format")
 
 	rootCmd.AddCommand(crawlCmd)
 	rootCmd.AddCommand(buildCmd)
@@ -66,10 +69,21 @@ func init() {
 }
 
 func crawl(ctx context.Context) error {
-	c := crawler.NewCrawler(crawler.Option{
+	opt := crawler.Option{
 		Limit:    int64(limit),
 		CacheDir: cacheDir,
-	})
+	}
+
+	if lastUpdate != "" {
+		t, err := time.Parse("2006-01-02", lastUpdate)
+		if err != nil {
+			return xerrors.Errorf("incorrect last update date format: %w", err)
+		}
+		opt.LastUpdate = t
+	}
+
+	c := crawler.NewCrawler(opt)
+
 	if err := c.Crawl(ctx); err != nil {
 		return xerrors.Errorf("crawl error: %w", err)
 	}
