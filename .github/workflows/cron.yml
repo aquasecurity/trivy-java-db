@@ -24,6 +24,17 @@ jobs:
           go-version-file: go.mod
         id: go
 
+      - name: Install oras
+        run: |
+          curl -LO https://github.com/oras-project/oras/releases/download/v1.2.0/oras_1.2.0_linux_amd64.tar.gz
+          tar -xvf ./oras_1.2.0_linux_amd64.tar.gz 
+
+      - name: Pull trivy-java-db
+        run: |
+          mkdir -p ./cache/db
+          ./oras pull docker.io/aquasec/trivy-java-db:1
+          tar -xvf javadb.tar.gz -C ./cache/db
+
       - name: Build the binary
         run: make build
 
@@ -58,11 +69,6 @@ jobs:
           registry: public.ecr.aws
           username: ${{ secrets.ECR_ACCESS_KEY_ID }}
           password: ${{ secrets.ECR_SECRET_ACCESS_KEY }}
-
-      - name: Install oras
-        run: |
-          curl -LO https://github.com/oras-project/oras/releases/download/v1.2.0/oras_1.2.0_linux_amd64.tar.gz
-          tar -xvf ./oras_1.2.0_linux_amd64.tar.gz          
 
       - name: Upload assets to registries
         run: |
