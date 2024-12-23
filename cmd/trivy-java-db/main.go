@@ -79,6 +79,8 @@ func crawl(ctx context.Context) error {
 		}
 		// Decrease the date by one day to offset the time of database creation
 		opt.LastUpdate = t.AddDate(0, 0, -1)
+		slog.Info("Using 'UpdatedAt' field to skip already added artifacts",
+			slog.String("date", fmt.Sprintf("%d-%d-%d", opt.LastUpdate.Year(), opt.LastUpdate.Month(), opt.LastUpdate.Day())))
 	}
 
 	c := crawler.NewCrawler(opt)
