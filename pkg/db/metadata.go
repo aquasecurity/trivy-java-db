@@ -15,6 +15,10 @@ type Client struct {
 	path string
 }
 
+func metadataPath(cacheDir string) string {
+	return filepath.Join(cacheDir, metadataFile)
+}
+
 type Metadata struct {
 	Version      int `json:",omitempty"`
 	NextUpdate   time.Time
@@ -24,7 +28,7 @@ type Metadata struct {
 
 func NewMetadata(cacheDir string) Client {
 	return Client{
-		path: filepath.Join(cacheDir, metadataFile),
+		path: metadataPath(cacheDir),
 	}
 }
 
@@ -66,4 +70,13 @@ func (c *Client) Delete() error {
 		return xerrors.Errorf("unable to remove the metadata file: %w", err)
 	}
 	return nil
+}
+
+func GetMetadataUpdatedAt(cacheDir string) (time.Time, error) {
+	c := NewMetadata(cacheDir)
+	metadata, err := c.Get()
+	if err != nil {
+		return time.Time{}, xerrors.Errorf("unable to get metadata: %w", err)
+	}
+	return metadata.UpdatedAt, nil
 }

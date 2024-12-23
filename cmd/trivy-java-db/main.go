@@ -6,7 +6,6 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
-	"time"
 
 	"github.com/spf13/cobra"
 	"golang.org/x/xerrors"
@@ -27,9 +26,8 @@ func main() {
 
 var (
 	// Used for flags.
-	cacheDir   string
-	limit      int
-	lastUpdate string
+	cacheDir string
+	limit    int
 
 	rootCmd = &cobra.Command{
 		Use:   "trivy-java-db",
@@ -60,7 +58,6 @@ func init() {
 	rootCmd.PersistentFlags().StringVar(&cacheDir, "cache-dir", filepath.Join(userCacheDir, "trivy-java-db"),
 		"cache dir")
 	rootCmd.PersistentFlags().IntVar(&limit, "limit", 300, "max parallelism")
-	rootCmd.PersistentFlags().StringVar(&lastUpdate, "last-update", "", "last update date in `YYYY-MM-DD` format")
 
 	rootCmd.AddCommand(crawlCmd)
 	rootCmd.AddCommand(buildCmd)
@@ -74,12 +71,13 @@ func crawl(ctx context.Context) error {
 		CacheDir: cacheDir,
 	}
 
-	if lastUpdate != "" {
-		t, err := time.Parse("2006-01-02", lastUpdate)
+	if db.Exists(cacheDir) {
+		t, err := db.GetMetadataUpdatedAt(cacheDir)
 		if err != nil {
-			return xerrors.Errorf("incorrect last update date format: %w", err)
+			return xerrors.Errorf("unable to get metadata UpdatedAt time: %w", err)
 		}
-		opt.LastUpdate = t
+		// Decrease the date by one day to offset the time of database creation
+		opt.LastUpdate = t.AddDate(0, 0, -1)
 	}
 
 	c := crawler.NewCrawler(opt)
@@ -91,18 +89,18 @@ func crawl(ctx context.Context) error {
 }
 
 func build() error {
-	if err := db.Reset(cacheDir); err != nil {
-		return xerrors.Errorf("db reset error: %w", err)
-	}
 	dbDir := filepath.Join(cacheDir, "db")
 	slog.Info("Database", slog.String("path", dbDir))
 	dbc, err := db.New(dbDir)
 	if err != nil {
 		return xerrors.Errorf("db create error: %w", err)
 	}
-	if err = dbc.Init(); err != nil {
-		return xerrors.Errorf("db init error: %w", err)
+	if !db.Exists(dbDir) {
+		if err = dbc.Init(); err != nil {
+			return xerrors.Errorf("db init error: %w", err)
+		}
 	}
+
 	meta := db.NewMetadata(dbDir)
 	b := builder.NewBuilder(dbc, meta)
 	if err = b.Build(cacheDir); err != nil {

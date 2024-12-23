@@ -27,8 +27,14 @@ func path(cacheDir string) string {
 	return filepath.Join(cacheDir, dbFileName)
 }
 
-func Reset(cacheDir string) error {
-	return os.RemoveAll(path(cacheDir))
+func Exists(cacheDir string) bool {
+	if _, err := os.Stat(path(cacheDir)); os.IsNotExist(err) {
+		return false
+	}
+	if _, err := os.Stat(metadataPath(cacheDir)); os.IsNotExist(err) {
+		return false
+	}
+	return true
 }
 
 func New(cacheDir string) (DB, error) {
