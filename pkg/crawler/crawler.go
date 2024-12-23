@@ -336,7 +336,11 @@ func (c *Crawler) sha1Urls(ctx context.Context, url string) ([]string, error) {
 		// Don't include sources, test, javadocs, scaladoc files
 		if strings.HasSuffix(link, ".jar.sha1") && !strings.HasSuffix(link, "sources.jar.sha1") &&
 			!strings.HasSuffix(link, "test.jar.sha1") && !strings.HasSuffix(link, "tests.jar.sha1") &&
-			!strings.HasSuffix(link, "javadoc.jar.sha1") && !strings.HasSuffix(link, "scaladoc.jar.sha1") {
+			!strings.HasSuffix(link, "javadoc.jar.sha1") && !strings.HasSuffix(link, "scaladoc.jar.sha1") &&
+			// There are cases when version dir doesn't have date
+			// So we should check date of sha1 file
+			// e.g. https://repo.maven.apache.org/maven2/ant-contrib/cpptasks/1.0b3/cpptasks-1.0b3.jar.sha1
+			!c.skipChildLink(selection) {
 			sha1URLs = append(sha1URLs, url+link)
 		}
 	})
