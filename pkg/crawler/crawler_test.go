@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 
@@ -17,6 +18,7 @@ func TestCrawl(t *testing.T) {
 	tests := []struct {
 		name       string
 		limit      int64
+		lastUpdate time.Time
 		fileNames  map[string]string
 		goldenPath string
 		filePath   string
@@ -40,6 +42,22 @@ func TestCrawl(t *testing.T) {
 				"/maven2/abbot/abbot/1.4.0/abbot-1.4.0-lite.jar.sha1":   "testdata/happy/abbot-1.4.0-lite.jar.sha1",
 			},
 			goldenPath: "testdata/happy/abbot.json.golden",
+			filePath:   "indexes/abbot/abbot.json",
+		},
+		{
+			name:       "happy path with lastUpdate",
+			limit:      1,
+			lastUpdate: time.Date(2010, 01, 01, 01, 01, 01, 0, time.UTC),
+			fileNames: map[string]string{
+				"/maven2/":                                            "testdata/happy/index.html",
+				"/maven2/abbot/":                                      "testdata/happy/abbot.html",
+				"/maven2/abbot/abbot/":                                "testdata/happy/abbot_abbot.html",
+				"/maven2/abbot/abbot/maven-metadata.xml":              "testdata/happy/maven-metadata.xml",
+				"/maven2/abbot/abbot/1.4.0/":                          "testdata/happy/abbot_abbot_1.4.0.html",
+				"/maven2/abbot/abbot/1.4.0/abbot-1.4.0.jar.sha1":      "testdata/happy/abbot-1.4.0.jar.sha1",
+				"/maven2/abbot/abbot/1.4.0/abbot-1.4.0-lite.jar.sha1": "testdata/happy/abbot-1.4.0-lite.jar.sha1",
+			},
+			goldenPath: "testdata/happy/abbot-1.4.0.json.golden",
 			filePath:   "indexes/abbot/abbot.json",
 		},
 		{
@@ -77,9 +95,10 @@ func TestCrawl(t *testing.T) {
 
 			tmpDir := t.TempDir()
 			cl := crawler.NewCrawler(crawler.Option{
-				RootUrl:  ts.URL + "/maven2/",
-				Limit:    tt.limit,
-				CacheDir: tmpDir,
+				RootUrl:    ts.URL + "/maven2/",
+				Limit:      tt.limit,
+				CacheDir:   tmpDir,
+				LastUpdate: tt.lastUpdate,
 			})
 
 			err := cl.Crawl(context.Background())
