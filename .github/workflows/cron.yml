@@ -84,11 +84,6 @@ jobs:
             ["${{ secrets.AQUSEC_ACR_REGISTRY_NAME }}"]=$(echo "$lowercase_repo" | cut -d'/' -f2)
           )
           
-          # Special case for docker.io if the organization is 'aquasecurity'
-          if [[ "${lowercase_repo}" == "aquasecurity/"* ]]; then
-            registries["docker.io"]="aquasec/${lowercase_repo#aquasecurity/}"
-            echo "Docker Hub repository adjusted for aquasecurity: ${registries["docker.io"]}"
-          fi
           
           # Loop through each registry and push the artifact
           for registry in "${!registries[@]}"; do
