@@ -1,8 +1,9 @@
 ---
 name: Trivy Java DB
 on:
-  schedule:
-    - cron: "0 0 * * *" # update indexes every day in 00:00
+  push:
+    branches:
+      - lihiz_upload_to_aqua
   workflow_dispatch:
 env:
   GH_USER: aqua-bot
@@ -39,25 +40,32 @@ jobs:
       - name: Move DB
         run: mv cache/db/javadb.tar.gz .
 
-      - name: Login to Docker Hub
-        uses: docker/login-action@v3
-        with:
-          username: ${{ secrets.DOCKERHUB_USER }}
-          password: ${{ secrets.DOCKERHUB_TOKEN }}
+#      - name: Login to Docker Hub
+#        uses: docker/login-action@v3
+#        with:
+#          username: ${{ secrets.DOCKERHUB_USER }}
+#          password: ${{ secrets.DOCKERHUB_TOKEN }}
 
-      - name: Login to GitHub Packages Container registry
-        uses: docker/login-action@v3
-        with:
-          registry: ghcr.io
-          username: ${{ env.GH_USER }}
-          password: ${{ secrets.GITHUB_TOKEN }}
+#      - name: Login to GitHub Packages Container registry
+#        uses: docker/login-action@v3
+#        with:
+#          registry: ghcr.io
+#          username: ${{ env.GH_USER }}
+#          password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Login to ECR
-        uses: docker/login-action@v3
+#      - name: Login to ECR
+#        uses: docker/login-action@v3
+#        with:
+#          registry: public.ecr.aws
+#          username: ${{ secrets.ECR_ACCESS_KEY_ID }}
+#          password: ${{ secrets.ECR_SECRET_ACCESS_KEY }}
+
+      - name: login to Aqua Container Registry
+        uses: azure/docker-login@v2
         with:
-          registry: public.ecr.aws
-          username: ${{ secrets.ECR_ACCESS_KEY_ID }}
-          password: ${{ secrets.ECR_SECRET_ACCESS_KEY }}
+          login-server: ${{ secrets.AQUSEC_ACR_REGISTRY_NAME }}
+          username: ${{ secrets.AQUASEC_ACR_USERNAME }}
+          password: ${{ secrets.AQUASEC_ACR_PASSWORD }}
 
       - name: Install oras
         run: |
@@ -73,9 +81,7 @@ jobs:
           
           # Define an array of registry base URLs and their corresponding repository names
           declare -A registries=(
-            ["ghcr.io"]="${lowercase_repo}"
-            ["public.ecr.aws"]="${lowercase_repo}"
-            ["docker.io"]="${lowercase_repo}"
+            ["${{ secrets.AQUSEC_ACR_REGISTRY_NAME }}"]=$(echo "$lowercase_repo" | cut -d'/' -f2)
           )
           
           # Special case for docker.io if the organization is 'aquasecurity'
@@ -103,14 +109,14 @@ jobs:
           echo "Artifact upload process completed."
 
 
-      - name: Microsoft Teams Notification
-        ## Until the PR with the fix for the AdaptivCard version is merged yet
-        ## https://github.com/Skitionek/notify-microsoft-teams/pull/96
-        ## Use the aquasecurity fork
-        uses: aquasecurity/notify-microsoft-teams@master
-        if: failure()
-        with:
-          webhook_url: ${{ secrets.TRIVY_MSTEAMS_WEBHOOK }}
-          needs: ${{ toJson(needs) }}
-          job: ${{ toJson(job) }}
-          steps: ${{ toJson(steps) }}
+#      - name: Microsoft Teams Notification
+#        ## Until the PR with the fix for the AdaptivCard version is merged yet
+#        ## https://github.com/Skitionek/notify-microsoft-teams/pull/96
+#        ## Use the aquasecurity fork
+#        uses: aquasecurity/notify-microsoft-teams@master
+#        if: failure()
+#        with:
+#          webhook_url: ${{ secrets.TRIVY_MSTEAMS_WEBHOOK }}
+#          needs: ${{ toJson(needs) }}
+#          job: ${{ toJson(job) }}
+#          steps: ${{ toJson(steps) }}
