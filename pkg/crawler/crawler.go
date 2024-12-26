@@ -21,6 +21,7 @@ import (
 	"golang.org/x/sync/semaphore"
 	"golang.org/x/xerrors"
 
+	"github.com/aquasecurity/trivy-java-db/pkg/db"
 	"github.com/aquasecurity/trivy-java-db/pkg/fileutil"
 	"github.com/aquasecurity/trivy-java-db/pkg/types"
 )
@@ -30,6 +31,7 @@ const mavenRepoURL = "https://repo.maven.apache.org/maven2/"
 type Crawler struct {
 	dir  string
 	http *retryablehttp.Client
+	dbc  *db.DB
 
 	rootUrl         string
 	wg              sync.WaitGroup
@@ -44,7 +46,7 @@ type Option struct {
 	CacheDir string
 }
 
-func NewCrawler(opt Option) Crawler {
+func NewCrawler(opt Option) (Crawler, error) {
 	client := retryablehttp.NewClient()
 	client.RetryMax = 10
 	client.Logger = slog.Default()
@@ -77,14 +79,25 @@ func NewCrawler(opt Option) Crawler {
 	indexDir := filepath.Join(opt.CacheDir, "indexes")
 	slog.Info("Index dir", slog.String("path", indexDir))
 
+	var dbc db.DB
+	if db.Exists(opt.CacheDir) {
+		var err error
+		dbc, err = db.New(opt.CacheDir)
+		if err != nil {
+			return Crawler{}, xerrors.Errorf("unable to open DB: %w", err)
+		}
+
+	}
+
 	return Crawler{
 		dir:  indexDir,
 		http: client,
+		dbc:  &dbc,
 
 		rootUrl: opt.RootUrl,
 		urlCh:   make(chan string, opt.Limit*10),
 		limit:   semaphore.NewWeighted(opt.Limit),
-	}
+	}, nil
 }
 
 func (c *Crawler) Crawl(ctx context.Context) error {
@@ -222,7 +235,12 @@ func (c *Crawler) Visit(ctx context.Context, url string) error {
 }
 
 func (c *Crawler) crawlSHA1(ctx context.Context, baseURL string, meta *Metadata, dirs []string) error {
-	var foundVersions []Version
+	var foundVersions []types.Version
+	// Get versions from the DB (if exists) to reduce the number of requests to the server
+	savedVersion, err := c.versionsFromDB(meta.ArtifactID, meta.GroupID)
+	if err != nil {
+		return xerrors.Errorf("unable to get list of versions from DB: %w", err)
+	}
 	// Check each version dir to find links to `*.jar.sha1` files.
 	for _, dir := range dirs {
 		dirURL := baseURL + dir
@@ -234,34 +252,37 @@ func (c *Crawler) crawlSHA1(ctx context.Context, baseURL string, meta *Metadata,
 		// Remove the `/` suffix to correctly compare file versions with version from directory name.
 		dirVersion := strings.TrimSuffix(dir, "/")
 		var dirVersionSha1 []byte
-		var versions []Version
+		var versions []types.Version
+
 		for _, sha1Url := range sha1Urls {
-			sha1, err := c.fetchSHA1(ctx, sha1Url)
-			if err != nil {
-				return xerrors.Errorf("unable to fetch sha1: %s", err)
-			}
-			if ver := versionFromSha1URL(meta.ArtifactID, sha1Url); ver != "" && len(sha1) != 0 {
-				// Save sha1 for the file where the version is equal to the version from the directory name in order to remove duplicates later
-				// Avoid overwriting dirVersion when inserting versions into the database (sha1 is uniq blob)
-				// e.g. `cudf-0.14-cuda10-1.jar.sha1` should not overwrite `cudf-0.14.jar.sha1`
-				// https://repo.maven.apache.org/maven2/ai/rapids/cudf/0.14/
-				if ver == dirVersion {
-					dirVersionSha1 = sha1
-				} else {
-					versions = append(versions, Version{
-						Version: ver,
-						SHA1:    sha1,
-					})
+			ver := versionFromSha1URL(meta.ArtifactID, sha1Url)
+			sha1, ok := savedVersion[ver]
+			if !ok {
+				sha1, err = c.fetchSHA1(ctx, sha1Url)
+				if err != nil {
+					return xerrors.Errorf("unable to fetch sha1: %s", err)
 				}
+			}
+			// Save sha1 for the file where the version is equal to the version from the directory name in order to remove duplicates later
+			// Avoid overwriting dirVersion when inserting versions into the database (sha1 is uniq blob)
+			// e.g. `cudf-0.14-cuda10-1.jar.sha1` should not overwrite `cudf-0.14.jar.sha1`
+			// https://repo.maven.apache.org/maven2/ai/rapids/cudf/0.14/
+			if ver == dirVersion {
+				dirVersionSha1 = sha1
+			} else {
+				versions = append(versions, types.Version{
+					Version: ver,
+					SHA1:    sha1,
+				})
 			}
 		}
 		// Remove duplicates of dirVersionSha1
-		versions = lo.Filter(versions, func(v Version, _ int) bool {
+		versions = lo.Filter(versions, func(v types.Version, _ int) bool {
 			return !bytes.Equal(v.SHA1, dirVersionSha1)
 		})
 
 		if dirVersionSha1 != nil {
-			versions = append(versions, Version{
+			versions = append(versions, types.Version{
 				Version: dirVersion,
 				SHA1:    dirVersionSha1,
 			})
@@ -408,6 +429,13 @@ func (c *Crawler) httpGet(ctx context.Context, url string) (*http.Response, erro
 		return nil, xerrors.Errorf("http error (%s): %w", url, err)
 	}
 	return resp, nil
+}
+
+func (c *Crawler) versionsFromDB(artifactID, groupID string) (map[string][]byte, error) {
+	if c.dbc == nil {
+		return nil, nil
+	}
+	return c.dbc.SelectVersionsByArtifactIDAndGroupID(artifactID, groupID)
 }
 
 func randomSleep() {
