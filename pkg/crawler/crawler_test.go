@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/aquasecurity/trivy-java-db/pkg/dbtest"
@@ -111,7 +112,7 @@ func TestCrawl(t *testing.T) {
 				})
 				require.NoError(t, err)
 
-				tmpDir = dbc.Dir()
+				tmpDir = filepath.Join(strings.TrimSuffix(dbc.Dir(), "db"))
 			}
 
 			cl, err := crawler.NewCrawler(crawler.Option{

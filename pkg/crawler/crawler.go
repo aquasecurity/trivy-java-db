@@ -80,13 +80,14 @@ func NewCrawler(opt Option) (Crawler, error) {
 	slog.Info("Index dir", slog.String("path", indexDir))
 
 	var dbc db.DB
-	if db.Exists(opt.CacheDir) {
+	dbDir := db.Dir(opt.CacheDir)
+	if db.Exists(dbDir) {
 		var err error
-		dbc, err = db.New(opt.CacheDir)
+		dbc, err = db.New(dbDir)
 		if err != nil {
 			return Crawler{}, xerrors.Errorf("unable to open DB: %w", err)
 		}
-
+		slog.Info("DB is used for crawler", slog.String("path", opt.CacheDir))
 	}
 
 	return Crawler{

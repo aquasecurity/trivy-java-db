@@ -1,16 +1,16 @@
 package dbtest
 
 import (
-	"github.com/aquasecurity/trivy-java-db/pkg/types"
 	"testing"
 
 	"github.com/stretchr/testify/require"
 
 	"github.com/aquasecurity/trivy-java-db/pkg/db"
+	"github.com/aquasecurity/trivy-java-db/pkg/types"
 )
 
 func InitDB(t *testing.T, indexes []types.Index) (db.DB, error) {
-	tmpDir := t.TempDir()
+	tmpDir := db.Dir(t.TempDir())
 	dbc, err := db.New(tmpDir)
 	require.NoError(t, err)
 
