@@ -129,6 +129,54 @@ func TestSelectIndexByArtifactIDAndGroupID(t *testing.T) {
 	}
 }
 
+func TestSelectVersionsByArtifactIDAndGroupID(t *testing.T) {
+	tests := []struct {
+		name       string
+		groupID    string
+		artifactID string
+		want       map[string][]byte
+		assertErr  assert.ErrorAssertionFunc
+	}{
+		{
+			name:       "happy path",
+			groupID:    "javax.servlet",
+			artifactID: "jstl",
+			want: map[string][]byte{
+				"1.0":   javaxServlet10Sha1b,
+				"1.1.0": javaxServlet110Sha1b,
+			},
+			assertErr: assert.NoError,
+		},
+		{
+			name:       "wrong ArtifactID",
+			groupID:    "javax.servlet",
+			artifactID: "wrong",
+			want:       map[string][]byte{},
+			assertErr:  assert.NoError,
+		},
+		{
+			name:       "wrong GroupID",
+			groupID:    "wrong",
+			artifactID: "jstl",
+			want:       map[string][]byte{},
+			assertErr:  assert.NoError,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			dbc, err := dbtest.InitDB(t, []types.Index{
+				indexJavaxServlet10,
+				indexJavaxServlet11,
+			})
+			require.NoError(t, err)
+
+			got, err := dbc.SelectVersionsByArtifactIDAndGroupID(tt.artifactID, tt.groupID)
+			tt.assertErr(t, err)
+			assert.Equal(t, tt.want, got)
+		})
+	}
+}
+
 func TestSelectIndexesByArtifactIDAndFileType(t *testing.T) {
 	var tests = []struct {
 		name        string

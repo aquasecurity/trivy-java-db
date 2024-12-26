@@ -23,12 +23,19 @@ type DB struct {
 	dir    string
 }
 
-func path(cacheDir string) string {
-	return filepath.Join(cacheDir, dbFileName)
+func Dir(cacheDir string) string {
+	return filepath.Join(cacheDir, "db")
 }
 
-func Reset(cacheDir string) error {
-	return os.RemoveAll(path(cacheDir))
+func Exists(cacheDir string) bool {
+	if _, err := os.Stat(path(cacheDir)); os.IsNotExist(err) {
+		return false
+	}
+	return true
+}
+
+func path(cacheDir string) string {
+	return filepath.Join(cacheDir, dbFileName)
 }
 
 func New(cacheDir string) (DB, error) {
@@ -172,6 +179,31 @@ func (db *DB) SelectIndexByArtifactIDAndGroupID(artifactID, groupID string) (typ
 		return index, xerrors.Errorf("select index error: %w", err)
 	}
 	return index, nil
+}
+
+func (db *DB) SelectVersionsByArtifactIDAndGroupID(artifactID, groupID string) (map[string][]byte, error) {
+	if db.client == nil {
+		return nil, nil
+	}
+	var versions = make(map[string][]byte)
+	rows, err := db.client.Query(`
+		SELECT i.version, i.sha1
+		FROM indices i 
+		JOIN artifacts a ON a.id = i.artifact_id
+        WHERE a.group_id = ? AND a.artifact_id = ?`,
+		groupID, artifactID)
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return nil, xerrors.Errorf("select indexes error: %w", err)
+	}
+	for rows.Next() {
+		var ver string
+		var sha1 []byte
+		if err = rows.Scan(&ver, &sha1); err != nil {
+			return nil, xerrors.Errorf("scan row error: %w", err)
+		}
+		versions[ver] = sha1
+	}
+	return versions, nil
 }
 
 // SelectIndexesByArtifactIDAndFileType returns all indexes for `artifactID` + `fileType` if `version` exists for them
