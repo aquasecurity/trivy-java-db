@@ -18,10 +18,6 @@ type Versioning struct {
 type Index struct {
 	GroupID     string
 	ArtifactID  string
-	Versions    []Version
+	Versions    []types.Version
 	ArchiveType types.ArchiveType
-}
-type Version struct {
-	Version string
-	SHA1    []byte
 }
