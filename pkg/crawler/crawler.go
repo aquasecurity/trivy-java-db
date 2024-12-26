@@ -288,6 +288,11 @@ func (c *Crawler) crawlSHA1(ctx context.Context, baseURL string, meta *Metadata,
 			})
 		}
 
+		versions = lo.Filter(versions, func(v types.Version, _ int) bool {
+			_, ok := savedVersion[v.Version]
+			return !ok
+		})
+
 		foundVersions = append(foundVersions, versions...)
 	}
 

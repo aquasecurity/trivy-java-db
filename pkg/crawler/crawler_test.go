@@ -67,7 +67,7 @@ func TestCrawl(t *testing.T) {
 				"/maven2/abbot/abbot/1.4.0/abbot-1.4.0.jar.sha1":        "testdata/happy/abbot-1.4.0.jar.sha1",
 				"/maven2/abbot/abbot/1.4.0/abbot-1.4.0-lite.jar.sha1":   "testdata/happy/abbot-1.4.0-lite.jar.sha1",
 			},
-			goldenPath: "testdata/happy/abbot.json.golden",
+			goldenPath: "testdata/happy/abbot-with-db.json.golden",
 			filePath:   "indexes/abbot/abbot.json",
 		},
 		{
