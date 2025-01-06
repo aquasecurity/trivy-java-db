@@ -17,7 +17,7 @@ import (
 	"github.com/aquasecurity/trivy-java-db/pkg/types"
 )
 
-const updateInterval = time.Hour * 72 // 3 days
+const updateInterval = time.Hour * 24 * 7
 
 type Builder struct {
 	db    db.DB
