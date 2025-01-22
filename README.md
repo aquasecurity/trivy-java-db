@@ -6,7 +6,7 @@
 The DB is used in Trivy to discover information about `jars` without GAV inside them.
 
 ## Update interval
-Every Thursday in 00:00
+Every 3 days at 00:00
 
 ## Download the java indexes database
 You can download the actual compiled database via [Trivy](https://aquasecurity.github.io/trivy/) or [Oras CLI](https://oras.land/cli/).
