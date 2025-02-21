@@ -5,7 +5,6 @@ import com.fasterxml.jackson.databind.SerializationFeature;
 
 import java.io.File;
 import java.io.IOException;
-import java.util.ArrayList;
 import java.util.HashMap;
 
 public class Index { // Used to save indexes to json
@@ -25,13 +24,13 @@ public class Index { // Used to save indexes to json
         this.versions.put(version, sha1 != null ? sha1 : "");
     }
 
-    public void saveToFile(String archiveName) throws IOException {
+    public void saveToFile(String archiveName, String cacheDir) throws IOException {
         String archiveDir = archiveName.substring(0, archiveName.lastIndexOf(".gz"));
         ObjectMapper objectMapper = new ObjectMapper();
         objectMapper.enable(SerializationFeature.INDENT_OUTPUT);
 
         // TODO use custom path for indexes
-        String filePath = "cache" + File.separator + "indexes" + File.separator + archiveDir
+        String filePath = cacheDir + File.separator + "indexes" + File.separator + archiveDir
                 + File.separator + this.groupID + File.separator + this.artifactID + ".json";
 
         File file = new File(filePath);

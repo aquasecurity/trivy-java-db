@@ -9,13 +9,11 @@ import org.apache.maven.index.context.DefaultIndexingContext;
 import org.apache.maven.index.context.IndexCreator;
 import org.apache.maven.index.context.IndexingContext;
 import org.apache.maven.index.creator.MinimalArtifactInfoIndexCreator;
-import org.apache.maven.index.updater.DefaultIndexUpdater;
 import org.apache.maven.index.updater.IndexUpdateRequest;
-import org.apache.maven.index.updater.IndexUpdateResult;
 import org.apache.maven.index.updater.ResourceFetcher;
-import org.apache.maven.index.incremental.DefaultIncrementalHandler;
 
 import java.io.*;
+import java.nio.file.Paths;
 import java.util.*;
 import java.util.zip.GZIPInputStream;
 
@@ -24,6 +22,11 @@ public class MavenIndexReader {
         File indexDir = new File("index");
         File repoDir = new File("repo");
         File localCache = new File("local-cache");
+        String cacheDir = args[0];
+        if (cacheDir.isEmpty()){
+            String userHome = System.getProperty("user.home");
+            cacheDir = Paths.get(userHome, ".cache").toString();
+        }
 
         // Create necessary directories
         for (File dir : new File[]{indexDir, repoDir, localCache}) {
@@ -52,8 +55,11 @@ public class MavenIndexReader {
                     true
             );
 
-            File indexesDir = new File("indexes");
-            File[] files = indexesDir.listFiles();
+            File archiveDir = new File(cacheDir + File.separator + "archives");
+            File[] files = archiveDir.listFiles();
+            if (files != null) {
+                Arrays.sort(files);
+            }
 
             if (files != null) {
                 for (File file : files) {
@@ -78,14 +84,12 @@ public class MavenIndexReader {
                             }
                         };
 
-                        System.out.println("Starting index update...");
+                        System.out.println("Updating indexes for " + file.getName());
 
                         // Execute index update
                         IndexUpdateRequest updateRequest = new IndexUpdateRequest(context, fetcher);
                         updateRequest.setLocalIndexCacheDir(localCache);
                         updateRequest.setForceFullUpdate(true);
-
-                        System.out.println("Index update completed. Starting search...");
 
                         // Initialize search engine
                         DefaultSearchEngine searchEngine = new DefaultSearchEngine();
@@ -112,7 +116,7 @@ public class MavenIndexReader {
                                 if (!artifactName.equals(newArtifactName)) {
                                     // Save previous Index
                                     if (index != null){
-                                        index.saveToFile(file.getName());
+                                        index.saveToFile(file.getName(), cacheDir);
                                     }
 
                                     // Init new Index
@@ -141,7 +145,7 @@ public class MavenIndexReader {
 
                         // Save last Index
                         if (index != null){
-                            index.saveToFile(file.getName());
+                            index.saveToFile(file.getName(), cacheDir);
                         }
                     }
                 }
