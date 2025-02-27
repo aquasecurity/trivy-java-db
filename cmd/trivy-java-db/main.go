@@ -7,7 +7,6 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/aquasecurity/trivy-java-db/pkg/downloader"
 	"github.com/spf13/cobra"
 	"golang.org/x/xerrors"
 
@@ -33,13 +32,6 @@ var (
 	rootCmd = &cobra.Command{
 		Use:   "trivy-java-db",
 		Short: "Build Java DB to store maven indexes",
-	}
-	downloadArchivesCmd = &cobra.Command{
-		Use:   "download",
-		Short: "Download maven central indexes archives",
-		RunE: func(cmd *cobra.Command, args []string) error {
-			return download()
-		},
 	}
 	crawlCmd = &cobra.Command{
 		Use:   "crawl",
@@ -69,7 +61,6 @@ func init() {
 
 	rootCmd.AddCommand(crawlCmd)
 	rootCmd.AddCommand(buildCmd)
-	rootCmd.AddCommand(downloadArchivesCmd)
 
 	slog.SetLogLoggerLevel(slog.LevelInfo) // TODO: add --debug
 }
@@ -106,20 +97,5 @@ func build() error {
 	if err = b.Build(cacheDir); err != nil {
 		return xerrors.Errorf("db build error: %w", err)
 	}
-	return nil
-}
-
-func download() error {
-	d, err := downloader.NewDownloader(downloader.Option{
-		CacheDir: cacheDir,
-	})
-	if err != nil {
-		return xerrors.Errorf("unable to create downloader: %w", err)
-	}
-
-	if err = d.Download(); err != nil {
-		return xerrors.Errorf("download archives failed: %w", err)
-	}
-
 	return nil
 }
