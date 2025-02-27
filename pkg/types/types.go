@@ -7,7 +7,7 @@ const (
 	JarType = "jar"
 	AarType = "aar"
 
-	IndexesDir = "indexes"
+	IndexDir = "indexes"
 )
 
 type Index struct {
