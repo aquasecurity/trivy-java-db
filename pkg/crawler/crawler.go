@@ -6,7 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"log"
 	"log/slog"
 	"path/filepath"
 	"strings"
@@ -25,7 +24,7 @@ const (
 
 	// Define the bucket name and prefix.
 	bucketName  = "maven-central"
-	queryPrefix = "maven2/"
+	queryPrefix = "maven2/org/"
 )
 
 type Crawler struct {
@@ -41,17 +40,6 @@ type Option struct {
 func NewCrawler(opt Option) (Crawler, error) {
 	indexDir := filepath.Join(opt.CacheDir, types.IndexDir)
 	slog.Info("Index dir", slog.String("path", indexDir))
-
-	//var dbc db.DB
-	//dbDir := db.Dir(opt.CacheDir)
-	//if db.Exists(dbDir) {
-	//	var err error
-	//	dbc, err = db.New(dbDir)
-	//	if err != nil {
-	//		return Crawler{}, xerrors.Errorf("unable to open DB: %w", err)
-	//	}
-	//	slog.Info("DB is used for crawler", slog.String("path", opt.CacheDir))
-	//}
 
 	return Crawler{
 		dir: indexDir,
@@ -72,9 +60,9 @@ func (c *Crawler) Crawl(ctx context.Context) error {
 	// Create a query with the specified prefix.
 	query := &storage.Query{
 		Prefix:    queryPrefix,
-		MatchGlob: "**jar*",
+		MatchGlob: "**jar.sha1",
 	}
-	err = query.SetAttrSelection([]string{"Name", "ContentType"})
+	err = query.SetAttrSelection([]string{"Name"})
 	if err != nil {
 		return xerrors.Errorf("unable to set attr selection: %w", err)
 	}
@@ -83,8 +71,8 @@ func (c *Crawler) Crawl(ctx context.Context) error {
 	it := bucket.Objects(ctx, query)
 
 	// Iterate through objects using it.Next()
-	var expectedSha1Name string
 	var index Index
+	var count int
 	for {
 		// Get the next object.
 		obj, err := it.Next()
@@ -94,68 +82,61 @@ func (c *Crawler) Crawl(ctx context.Context) error {
 			return xerrors.Errorf("failed to iterate objects: %w", err)
 		}
 
-		// Don't check folder with index archives
+		// Skip dir with index archives
 		if strings.HasPrefix(obj.Name, "maven2/.index") {
 			continue
 		}
 
-		if obj.Name == expectedSha1Name {
-			// Retrieve the SHA1 file's content.
-			sha1Content, err := retrieveObjectContent(ctx, bucket, obj.Name)
-			if err != nil {
-				return xerrors.Errorf("failed to retrieve content: %w", err)
-			}
-			expectedSha1Name = ""
-
-			sha1 := c.decodeSha1String(obj.Name, sha1Content)
-			if len(sha1) == 0 {
-				continue
-			}
-
-			groupID, artifactID, version := parseObjectName(obj.Name)
-			if index.GroupID != groupID || index.ArtifactID != artifactID {
-				// Save previous index
-				if err := c.saveIndexToFile(index); err != nil {
-					return xerrors.Errorf("failed to save index to file: %w", err)
-				}
-
-				// Init index with new GroupID and ArtifactID
-				index = Index{
-					GroupID:     groupID,
-					ArtifactID:  artifactID,
-					ArchiveType: types.JarType,
-				}
-			}
-
-			// Save new version + sha1
-			index.Versions = append(index.Versions, types.Version{
-				Version: version,
-				SHA1:    sha1,
-			})
-
-			continue
-		}
-
 		// Skip unwanted JARs.
-		if strings.HasSuffix(obj.Name, "sources.jar") || strings.HasSuffix(obj.Name, "test.jar") ||
-			strings.HasSuffix(obj.Name, "tests.jar") || strings.HasSuffix(obj.Name, "javadoc.jar") ||
-			strings.HasSuffix(obj.Name, "scaladoc.jar") {
+		if strings.HasSuffix(obj.Name, "sources.jar.sha1") || strings.HasSuffix(obj.Name, "test.jar.sha1") ||
+			strings.HasSuffix(obj.Name, "tests.jar.sha1") || strings.HasSuffix(obj.Name, "javadoc.jar.sha1") ||
+			strings.HasSuffix(obj.Name, "scaladoc.jar.sha1") {
 			continue
 		}
-		// Filter by content type.
-		if obj.ContentType != "application/java-archive" {
+
+		// Retrieve the SHA1 file's content.
+		sha1Content, err := retrieveObjectContent(ctx, bucket, obj.Name)
+		if err != nil {
+			return xerrors.Errorf("failed to retrieve content: %w", err)
+		}
+
+		sha1 := c.decodeSha1String(obj.Name, sha1Content)
+		if len(sha1) == 0 {
 			continue
 		}
-		if expectedSha1Name != "" {
-			log.Printf("Expected SHA1 not found: %s", expectedSha1Name)
+
+		groupID, artifactID, version := parseObjectName(obj.Name)
+		if index.GroupID != groupID || index.ArtifactID != artifactID {
+			// Save previous index
+			if err := c.saveIndexToFile(index); err != nil {
+				return xerrors.Errorf("failed to save index to file: %w", err)
+			}
+
+			// Init index with new GroupID and ArtifactID
+			index = Index{
+				GroupID:     groupID,
+				ArtifactID:  artifactID,
+				ArchiveType: types.JarType,
+			}
 		}
-		expectedSha1Name = obj.Name + ".sha1"
+
+		// Save new version + sha1
+		index.Versions = append(index.Versions, types.Version{
+			Version: version,
+			SHA1:    sha1,
+		})
+
+		count++
+		if count%10 == 0 {
+			slog.Info("Indexed digests", slog.Int("count", count))
+		}
 	}
 
 	// Save last index
 	if err = c.saveIndexToFile(index); err != nil {
 		return xerrors.Errorf("failed to save index to file: %w", err)
 	}
+	slog.Info("Total indexed digests", slog.Int("count", count))
 
 	if len(c.wrongSHA1Values) > 0 {
 		for _, wrongSHA1 := range c.wrongSHA1Values {
