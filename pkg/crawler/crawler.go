@@ -7,11 +7,17 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"net/http"
+	"path"
 	"path/filepath"
 	"strings"
+	"sync"
 
 	"cloud.google.com/go/storage"
+	"github.com/PuerkitoBio/goquery"
+	"github.com/hashicorp/go-retryablehttp"
 	"github.com/samber/lo"
+	"golang.org/x/sync/semaphore"
 	"golang.org/x/xerrors"
 	"google.golang.org/api/iterator"
 	"google.golang.org/api/option"
@@ -21,32 +27,146 @@ import (
 )
 
 const (
-
+	mavenRepoURL = "https://repo1.maven.org/maven2/"
 	// Define the bucket name and prefix.
-	bucketName  = "maven-central"
-	queryPrefix = "maven2/org/"
+	bucketName      = "maven-central"
+	queryRootPrefix = "maven2/"
 )
 
 type Crawler struct {
-	dir string
+	http *retryablehttp.Client
 
+	rootUrl string
+	dir     string
+
+	wg              sync.WaitGroup
+	limit           *semaphore.Weighted
+	errOnce         sync.Once
+	queryRootPrefix string
+
+	// Number of Indexes
+	count           int
 	wrongSHA1Values []string
 }
 
 type Option struct {
+	Limit    int64
+	RootUrl  string
 	CacheDir string
 }
 
 func NewCrawler(opt Option) (Crawler, error) {
+	client := retryablehttp.NewClient()
+	client.RetryMax = 10
+	client.Logger = slog.Default()
+
 	indexDir := filepath.Join(opt.CacheDir, types.IndexDir)
 	slog.Info("Index dir", slog.String("path", indexDir))
 
+	if opt.RootUrl == "" {
+		opt.RootUrl = mavenRepoURL
+	}
+
 	return Crawler{
-		dir: indexDir,
+		http:            client,
+		rootUrl:         opt.RootUrl,
+		dir:             indexDir,
+		limit:           semaphore.NewWeighted(opt.Limit),
+		queryRootPrefix: queryRootPrefix,
 	}, nil
 }
 
 func (c *Crawler) Crawl(ctx context.Context) error {
+	slog.Info("Crawl maven repository and save indexes")
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+
+	dirs, err := c.getDirList(ctx)
+	if err != nil {
+		return xerrors.Errorf("unable to get dir list: %w", err)
+	}
+
+	doneCh := make(chan struct{})
+	defer close(doneCh)
+	errCh := make(chan error)
+	defer close(errCh)
+
+	c.wg.Add(1)
+	go func() {
+		c.wg.Wait()
+		doneCh <- struct{}{}
+	}()
+
+	for _, dir := range dirs {
+		if err = c.limit.Acquire(ctx, 1); err != nil {
+			errCh <- xerrors.Errorf("semaphore acquire error: %w", err)
+			break
+		}
+
+		go func() {
+			c.wg.Add(1)
+			defer c.wg.Done()
+			defer c.limit.Release(1)
+
+			if err = c.crawlDir(ctx, dir); err != nil {
+				c.errOnce.Do(func() {
+					errCh <- xerrors.Errorf("unable to crawl directory: %w", err)
+				})
+			}
+		}()
+	}
+	c.wg.Done()
+
+loop:
+	for {
+		select {
+		case <-doneCh:
+			slog.Info("Total saved indexes", slog.Int("count", c.count))
+			break loop
+		case err = <-errCh:
+			cancel()
+		}
+	}
+
+	if err != nil {
+		return xerrors.Errorf("crawl error: %w", err)
+	}
+
+	return nil
+}
+
+func (c *Crawler) getDirList(ctx context.Context) ([]string, error) {
+	slog.Info("Getting list if dirs")
+	req, err := retryablehttp.NewRequestWithContext(ctx, http.MethodGet, c.rootUrl, nil)
+	if err != nil {
+		return nil, xerrors.Errorf("unable to create a HTTP request: %w", err)
+	}
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return nil, xerrors.Errorf("http error (%s): %w", c.rootUrl, err)
+	}
+	defer resp.Body.Close()
+
+	d, err := goquery.NewDocumentFromReader(resp.Body)
+	if err != nil {
+		return nil, xerrors.Errorf("can't create new goquery doc: %w", err)
+	}
+
+	var dirs []string
+	d.Find("a").Each(func(i int, selection *goquery.Selection) {
+		link := selection.Text()
+		if link == "../" || !strings.HasSuffix(link, "/") {
+			// only `../` and dirs have `/` suffix. We don't need to check other files.
+			return
+		}
+
+		dirs = append(dirs, link)
+	})
+
+	return dirs, nil
+}
+
+func (c *Crawler) crawlDir(ctx context.Context, dir string) error {
 	// Create a storage client without authentication (public bucket access).
 	client, err := storage.NewClient(ctx, option.WithoutAuthentication())
 	if err != nil {
@@ -54,25 +174,20 @@ func (c *Crawler) Crawl(ctx context.Context) error {
 	}
 	defer client.Close()
 
-	// Get a handle to the bucket.
 	bucket := client.Bucket(bucketName)
-
-	// Create a query with the specified prefix.
 	query := &storage.Query{
-		Prefix:    queryPrefix,
+		Prefix:    path.Join(c.queryRootPrefix, dir),
 		MatchGlob: "**jar.sha1",
 	}
+
 	err = query.SetAttrSelection([]string{"Name"})
 	if err != nil {
 		return xerrors.Errorf("unable to set attr selection: %w", err)
 	}
 
-	// Create an iterator to loop over the objects.
 	it := bucket.Objects(ctx, query)
 
-	// Iterate through objects using it.Next()
 	var index Index
-	var count int
 	for {
 		// Get the next object.
 		obj, err := it.Next()
@@ -82,12 +197,7 @@ func (c *Crawler) Crawl(ctx context.Context) error {
 			return xerrors.Errorf("failed to iterate objects: %w", err)
 		}
 
-		// Skip dir with index archives
-		if strings.HasPrefix(obj.Name, "maven2/.index") {
-			continue
-		}
-
-		// Skip unwanted JARs.
+		// Don't save sources, test, javadocs, scaladoc files
 		if strings.HasSuffix(obj.Name, "sources.jar.sha1") || strings.HasSuffix(obj.Name, "test.jar.sha1") ||
 			strings.HasSuffix(obj.Name, "tests.jar.sha1") || strings.HasSuffix(obj.Name, "javadoc.jar.sha1") ||
 			strings.HasSuffix(obj.Name, "scaladoc.jar.sha1") {
@@ -126,17 +236,12 @@ func (c *Crawler) Crawl(ctx context.Context) error {
 			SHA1:    sha1,
 		})
 
-		count++
-		if count%10 == 0 {
-			slog.Info("Indexed digests", slog.Int("count", count))
-		}
 	}
 
 	// Save last index
 	if err = c.saveIndexToFile(index); err != nil {
 		return xerrors.Errorf("failed to save index to file: %w", err)
 	}
-	slog.Info("Total indexed digests", slog.Int("count", count))
 
 	if len(c.wrongSHA1Values) > 0 {
 		for _, wrongSHA1 := range c.wrongSHA1Values {
@@ -214,6 +319,11 @@ func (c *Crawler) saveIndexToFile(index Index) error {
 	filePath := filepath.Join(c.dir, index.GroupID, fileName)
 	if err := fileutil.WriteJSON(filePath, index); err != nil {
 		return xerrors.Errorf("json write error: %w", err)
+	}
+
+	c.count++
+	if c.count%1000 == 0 {
+		slog.Info("Saved indexes", slog.Int("count", c.count))
 	}
 	return nil
 }
