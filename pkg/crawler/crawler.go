@@ -8,6 +8,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"net/url"
 	"path"
 	"path/filepath"
 	"strings"
@@ -81,9 +82,19 @@ func (c *Crawler) Crawl(ctx context.Context) error {
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 
-	dirs, err := c.getDirList(ctx)
+	dirs, err := c.getDirList(ctx, "")
 	if err != nil {
 		return xerrors.Errorf("unable to get dir list: %w", err)
+	}
+
+	var nestedDirs []string
+	for _, dir := range dirs {
+		var dd []string
+		dd, err = c.getDirList(ctx, dir)
+		if err != nil {
+			return xerrors.Errorf("unable to get dir list for %s dir: %w", dir, err)
+		}
+		nestedDirs = append(nestedDirs, dd...)
 	}
 
 	doneCh := make(chan struct{})
@@ -97,7 +108,7 @@ func (c *Crawler) Crawl(ctx context.Context) error {
 		doneCh <- struct{}{}
 	}()
 
-	for _, dir := range dirs {
+	for _, dir := range nestedDirs {
 		if err = c.limit.Acquire(ctx, 1); err != nil {
 			errCh <- xerrors.Errorf("semaphore acquire error: %w", err)
 			break
@@ -135,9 +146,13 @@ loop:
 	return nil
 }
 
-func (c *Crawler) getDirList(ctx context.Context) ([]string, error) {
-	slog.Info("Getting list if dirs")
-	req, err := retryablehttp.NewRequestWithContext(ctx, http.MethodGet, c.rootUrl, nil)
+func (c *Crawler) getDirList(ctx context.Context, dir string) ([]string, error) {
+	slog.Info("Getting list of dirs", slog.String("dir", dir))
+	u, err := url.JoinPath(c.rootUrl, dir)
+	if err != nil {
+		return nil, xerrors.Errorf("unable to join url: %w", err)
+	}
+	req, err := retryablehttp.NewRequestWithContext(ctx, http.MethodGet, u, nil)
 	if err != nil {
 		return nil, xerrors.Errorf("unable to create a HTTP request: %w", err)
 	}
@@ -160,7 +175,7 @@ func (c *Crawler) getDirList(ctx context.Context) ([]string, error) {
 			return
 		}
 
-		dirs = append(dirs, link)
+		dirs = append(dirs, path.Join(dir, link))
 	})
 
 	return dirs, nil
