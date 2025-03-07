@@ -34,6 +34,10 @@ func Exists(cacheDir string) bool {
 	return true
 }
 
+func Reset(cacheDir string) error {
+	return os.RemoveAll(path(cacheDir))
+}
+
 func path(cacheDir string) string {
 	return filepath.Join(cacheDir, dbFileName)
 }
