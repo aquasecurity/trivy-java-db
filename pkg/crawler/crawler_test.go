@@ -2,14 +2,12 @@ package crawler_test
 
 import (
 	"context"
-	"encoding/hex"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"testing"
 
-	"github.com/aquasecurity/trivy-java-db/pkg/types"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
@@ -122,23 +120,3 @@ func serverResponse(t *testing.T, files map[string]string, w http.ResponseWriter
 	w.WriteHeader(http.StatusOK)
 	return
 }
-
-var (
-	abbot123Sha1b, _ = hex.DecodeString("51d28a27d919ce8690a40f4f335b9d591ceb16e9")
-	indexAbbot123    = types.Index{
-		GroupID:     "abbot",
-		ArtifactID:  "abbot",
-		Version:     "0.12.3",
-		SHA1:        abbot123Sha1b,
-		ArchiveType: types.JarType,
-	}
-
-	abbot130Sha1b, _ = hex.DecodeString("596d91e67631b0deb05fb685d8d1b6735f3e4f60")
-	indexAbbot130    = types.Index{
-		GroupID:     "abbot",
-		ArtifactID:  "abbot",
-		Version:     "0.13.0",
-		SHA1:        abbot130Sha1b,
-		ArchiveType: types.JarType,
-	}
-)
