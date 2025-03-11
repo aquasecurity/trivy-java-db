@@ -48,7 +48,7 @@ type Option struct {
 
 func NewCrawler(opt Option) (Crawler, error) {
 	client := retryablehttp.NewClient()
-	client.RetryMax = 15
+	client.RetryMax = 10
 	client.Logger = slog.Default()
 	client.RetryWaitMin = 1 * time.Minute
 	client.RetryWaitMax = 5 * time.Minute
