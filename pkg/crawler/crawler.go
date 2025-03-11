@@ -176,6 +176,7 @@ loop:
 			break loop
 		case err := <-errCh:
 			cancel() // Stop all running Visit functions to avoid writing to closed c.urlCh.
+			close(c.urlCh)
 			return err
 
 		}

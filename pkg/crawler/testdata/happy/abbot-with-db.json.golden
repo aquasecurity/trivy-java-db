@@ -1,15 +1,10 @@
-{
-  "GroupID": "abbot",
-  "ArtifactID": "abbot",
-  "Versions": [
-    {
-      "Version": "1.4.0-lite",
-      "SHA1": "BUerA3Bor6ICaSW9lL+5/Pzsl2E="
-    },
-    {
-      "Version": "1.4.0",
-      "SHA1": "ojY2RqndBZVWM7RQAQtZohr4pCM="
-    }
-  ],
-  "ArchiveType": "jar"
-}
+[
+  {
+    "version": "1.4.0-lite",
+    "sha1": "BUerA3Bor6ICaSW9lL+5/Pzsl2E="
+  },
+  {
+    "version": "1.4.0",
+    "sha1": "ojY2RqndBZVWM7RQAQtZohr4pCM="
+  }
+]
