@@ -1,7 +1,6 @@
 package crawler
 
 import (
-	"bytes"
 	"context"
 	"encoding/hex"
 	"encoding/xml"
@@ -18,6 +17,7 @@ import (
 	"github.com/PuerkitoBio/goquery"
 	"github.com/hashicorp/go-retryablehttp"
 	"github.com/samber/lo"
+	"golang.org/x/net/html/charset"
 	"golang.org/x/sync/semaphore"
 	"golang.org/x/xerrors"
 
@@ -27,8 +27,8 @@ import (
 )
 
 const (
-	mavenRepoURL = "https://repo.maven.apache.org/maven2/HTTPClient/"
-	gcrURL       = "https://storage.googleapis.com/maven-central/maven2/HTTPClient/"
+	mavenRepoURL = "https://repo.maven.apache.org/maven2/"
+	gcrURL       = "https://storage.googleapis.com/maven-central/maven2/"
 )
 
 type Crawler struct {
@@ -42,6 +42,7 @@ type Crawler struct {
 	urlCh           chan string
 	limit           *semaphore.Weighted
 	wrongSHA1Values []string
+	wrongPomFiles   []string
 }
 
 type Option struct {
@@ -187,6 +188,11 @@ loop:
 			slog.Warn("Wrong SHA1 file", slog.String("error", wrongSHA1))
 		}
 	}
+	if len(c.wrongPomFiles) > 0 {
+		for _, wrongPomFile := range c.wrongPomFiles {
+			slog.Warn("Wrong pom file", slog.String("error", wrongPomFile))
+		}
+	}
 	return nil
 }
 
@@ -255,33 +261,39 @@ func (c *Crawler) Visit(ctx context.Context, url string) error {
 
 func (c *Crawler) crawlSHA1(ctx context.Context, baseURL string, meta *Metadata, dirs []string) error {
 	var foundVersions []types.Version
-	// Get versions from the DB (if exists) to reduce the number of requests to the server
-	savedVersion, err := c.versionsFromDB(meta.ArtifactID, meta.GroupID)
-	if err != nil {
-		return xerrors.Errorf("unable to get list of versions from DB: %w", err)
-	}
+
 	// Check each version dir to find links to `*.jar.sha1` files.
 	for _, dir := range dirs {
 		dirURL := baseURL + dir
-		sha1Urls, err := c.sha1Urls(ctx, dirURL)
+		sha1Urls, pomUrl, err := c.requiredFilesUrls(ctx, dirURL)
 		if err != nil {
 			return xerrors.Errorf("unable to get list of sha1 files from %q: %s", dirURL, err)
 		}
 
+		var licenses []string
+		if pomUrl != "" {
+			ll, err := c.licenses(ctx, pomUrl)
+			if err != nil {
+				c.wrongPomFiles = append(c.wrongPomFiles, fmt.Sprintf("%s (%s)", pomUrl, err))
+			}
+
+			if len(ll) > 0 {
+				licenses = ll
+			}
+		}
+
 		// Remove the `/` suffix to correctly compare file versions with version from directory name.
 		dirVersion := strings.TrimSuffix(dir, "/")
-		var dirVersionSha1 []byte
+		var dirVersionSha1 string
 		var versions []types.Version
 
 		for _, sha1Url := range sha1Urls {
 			ver := versionFromSha1URL(meta.ArtifactID, sha1Url)
-			sha1, ok := savedVersion[ver]
-			if !ok {
-				sha1, err = c.fetchSHA1(ctx, sha1Url)
-				if err != nil {
-					return xerrors.Errorf("unable to fetch sha1: %s", err)
-				}
+			sha1, err := c.fetchSHA1(ctx, sha1Url)
+			if err != nil {
+				return xerrors.Errorf("unable to fetch sha1: %s", err)
 			}
+
 			// Save sha1 for the file where the version is equal to the version from the directory name in order to remove duplicates later
 			// Avoid overwriting dirVersion when inserting versions into the database (sha1 is uniq blob)
 			// e.g. `cudf-0.14-cuda10-1.jar.sha1` should not overwrite `cudf-0.14.jar.sha1`
@@ -297,20 +309,16 @@ func (c *Crawler) crawlSHA1(ctx context.Context, baseURL string, meta *Metadata,
 		}
 		// Remove duplicates of dirVersionSha1
 		versions = lo.Filter(versions, func(v types.Version, _ int) bool {
-			return !bytes.Equal(v.SHA1, dirVersionSha1)
+			return v.SHA1 != dirVersionSha1
 		})
 
-		if dirVersionSha1 != nil {
+		if dirVersionSha1 != "" {
 			versions = append(versions, types.Version{
-				Version: dirVersion,
-				SHA1:    dirVersionSha1,
+				Version:  dirVersion,
+				SHA1:     dirVersionSha1,
+				Licenses: licenses,
 			})
 		}
-
-		versions = lo.Filter(versions, func(v types.Version, _ int) bool {
-			_, ok := savedVersion[v.Version]
-			return !ok
-		})
 
 		foundVersions = append(foundVersions, versions...)
 	}
@@ -322,38 +330,46 @@ func (c *Crawler) crawlSHA1(ctx context.Context, baseURL string, meta *Metadata,
 	fileName := fmt.Sprintf("%s.json", meta.ArtifactID)
 	dirPath := filepath.Join(strings.Split(meta.GroupID, ".")...)
 	filePath := filepath.Join(c.dir, dirPath, fileName)
-	if err = fileutil.WriteJSON(filePath, foundVersions); err != nil {
+	if err := fileutil.WriteJSON(filePath, foundVersions); err != nil {
 		return xerrors.Errorf("json write error: %w", err)
 	}
 	return nil
 }
 
-func (c *Crawler) sha1Urls(ctx context.Context, url string) ([]string, error) {
+// requiredFilesUrls returns urls for *.jar.sha1 and *.pom files
+func (c *Crawler) requiredFilesUrls(ctx context.Context, url string) ([]string, string, error) {
 	resp, err := c.httpGet(ctx, url)
 	if err != nil {
-		return nil, xerrors.Errorf("http get error: %w", err)
+		return nil, "", xerrors.Errorf("http get error: %w", err)
 	}
 	defer func() { _ = resp.Body.Close() }()
 
 	d, err := goquery.NewDocumentFromReader(resp.Body)
 	if err != nil {
-		return nil, xerrors.Errorf("can't create new goquery doc: %w", err)
+		return nil, "", xerrors.Errorf("can't create new goquery doc: %w", err)
 	}
 
 	// Version dir may contain multiple `*jar.sha1` files.
 	// e.g. https://repo1.maven.org/maven2/org/jasypt/jasypt/1.9.3/
 	// We need to take all links.
 	var sha1URLs []string
+	var pomUrl string
 	d.Find("a").Each(func(i int, selection *goquery.Selection) {
 		link := linkFromSelection(selection)
+		fullLink := url + link
+		if strings.HasSuffix(link, ".pom") {
+			pomUrl = fullLink
+			return
+		}
+
 		// Don't include sources, test, javadocs, scaladoc files
 		if strings.HasSuffix(link, ".jar.sha1") && !strings.HasSuffix(link, "sources.jar.sha1") &&
 			!strings.HasSuffix(link, "test.jar.sha1") && !strings.HasSuffix(link, "tests.jar.sha1") &&
 			!strings.HasSuffix(link, "javadoc.jar.sha1") && !strings.HasSuffix(link, "scaladoc.jar.sha1") {
-			sha1URLs = append(sha1URLs, url+link)
+			sha1URLs = append(sha1URLs, fullLink)
 		}
 	})
-	return sha1URLs, nil
+	return sha1URLs, pomUrl, nil
 }
 
 func (c *Crawler) parseMetadata(ctx context.Context, url string) (*Metadata, error) {
@@ -393,46 +409,53 @@ func (c *Crawler) parseMetadata(ctx context.Context, url string) (*Metadata, err
 	return &meta, nil
 }
 
-func (c *Crawler) fetchSHA1(ctx context.Context, url string) ([]byte, error) {
-	resp, err := c.tryFetchSHA1(ctx, url)
+func (c *Crawler) fetchSHA1(ctx context.Context, url string) (string, error) {
+	resp, err := c.tryGetFile(ctx, url)
+	if err != nil {
+		return "", xerrors.Errorf("unable to get file: %w", err)
+	}
 	defer func() { _ = resp.Body.Close() }()
 
 	// These are cases when version dir contains link to sha1 file
 	// But file doesn't exist
 	// e.g. https://repo.maven.apache.org/maven2/com/adobe/aem/uber-jar/6.4.8.2/uber-jar-6.4.8.2-sources.jar.sha1
 	if resp.StatusCode == http.StatusNotFound {
-		return nil, nil // TODO add special error for this
+		return "", nil // TODO add special error for this
 	}
 
 	sha1, err := io.ReadAll(resp.Body)
 	if err != nil {
-		return nil, xerrors.Errorf("can't read sha1 %s: %w", url, err)
+		return "", xerrors.Errorf("can't read sha1 %s: %w", url, err)
 	}
 
 	// there are empty xxx.jar.sha1 files. Skip them.
 	// e.g. https://repo.maven.apache.org/maven2/org/wso2/msf4j/msf4j-swagger/2.5.2/msf4j-swagger-2.5.2.jar.sha1
 	// https://repo.maven.apache.org/maven2/org/wso2/carbon/analytics/org.wso2.carbon.permissions.rest.api/2.0.248/org.wso2.carbon.permissions.rest.api-2.0.248.jar.sha1
 	if len(sha1) == 0 {
-		return nil, nil
+		return "", nil
 	}
 	// there are xxx.jar.sha1 files with additional data. e.g.:
 	// https://repo.maven.apache.org/maven2/aspectj/aspectjrt/1.5.2a/aspectjrt-1.5.2a.jar.sha1
 	// https://repo.maven.apache.org/maven2/xerces/xercesImpl/2.9.0/xercesImpl-2.9.0.jar.sha1
-	var sha1b []byte
+	var sha1s string
 	for _, s := range strings.Split(strings.TrimSpace(string(sha1)), " ") {
-		sha1b, err = hex.DecodeString(s)
-		if err == nil {
+		if _, err = hex.DecodeString(s); err == nil {
+			sha1s = s
 			break
 		}
 	}
-	if len(sha1b) == 0 {
+	if sha1s == "" {
 		c.wrongSHA1Values = append(c.wrongSHA1Values, fmt.Sprintf("%s (%s)", url, err))
-		return nil, nil
+		return "", nil
 	}
-	return sha1b, nil
+
+	// We need to decode sha1 to find sha1.
+	// But we need to keep default
+	// cf.
+	return sha1s, nil
 }
 
-func (c *Crawler) tryFetchSHA1(ctx context.Context, url string) (*http.Response, error) {
+func (c *Crawler) tryGetFile(ctx context.Context, url string) (*http.Response, error) {
 	gcsURL := strings.ReplaceAll(url, c.mavenUrl, c.gcrUrl)
 	resp, err := c.httpGet(ctx, gcsURL)
 	if err != nil {
@@ -464,11 +487,28 @@ func (c *Crawler) httpGet(ctx context.Context, url string) (*http.Response, erro
 	return resp, nil
 }
 
-func (c *Crawler) versionsFromDB(artifactID, groupID string) (map[string][]byte, error) {
-	if c.dbc == nil {
+func (c *Crawler) licenses(ctx context.Context, url string) ([]string, error) {
+	resp, err := c.tryGetFile(ctx, url)
+	if err != nil {
+		return nil, xerrors.Errorf("unable to get file: %w", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusOK {
 		return nil, nil
 	}
-	return c.dbc.SelectVersionsByArtifactIDAndGroupID(artifactID, groupID)
+
+	var pom pomXML
+	decoder := xml.NewDecoder(resp.Body)
+	decoder.CharsetReader = charset.NewReaderLabel
+
+	if err = decoder.Decode(&pom); err != nil {
+		return nil, xerrors.Errorf("unable to decode pom file: %w", err)
+	}
+
+	licenses := lo.Map(pom.Licenses, func(license pomLicense, _ int) string {
+		return license.Name
+	})
+	return licenses, nil
 }
 
 func randomSleep() {

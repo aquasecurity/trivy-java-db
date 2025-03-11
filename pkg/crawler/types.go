@@ -18,3 +18,11 @@ type Versioning struct {
 type Index struct {
 	Versions []types.Version
 }
+
+type pomXML struct {
+	Licenses []pomLicense `xml:"licenses>license"`
+}
+
+type pomLicense struct {
+	Name string `xml:"name"`
+}
