@@ -21,7 +21,6 @@ import (
 	"golang.org/x/sync/semaphore"
 	"golang.org/x/xerrors"
 
-	"github.com/aquasecurity/trivy-java-db/pkg/db"
 	"github.com/aquasecurity/trivy-java-db/pkg/fileutil"
 	"github.com/aquasecurity/trivy-java-db/pkg/types"
 )
@@ -34,7 +33,6 @@ const (
 type Crawler struct {
 	dir  string
 	http *retryablehttp.Client
-	dbc  *db.DB
 
 	mavenUrl        string
 	gcrUrl          string
@@ -97,21 +95,9 @@ func NewCrawler(opt Option) (Crawler, error) {
 	indexDir := filepath.Join(opt.CacheDir, "indexes")
 	slog.Info("Index dir", slog.String("path", indexDir))
 
-	var dbc db.DB
-	dbDir := db.Dir(opt.CacheDir)
-	if db.Exists(dbDir) {
-		var err error
-		dbc, err = db.New(dbDir)
-		if err != nil {
-			return Crawler{}, xerrors.Errorf("unable to open DB: %w", err)
-		}
-		slog.Info("DB is used for crawler", slog.String("path", opt.CacheDir))
-	}
-
 	return Crawler{
 		dir:  indexDir,
 		http: client,
-		dbc:  &dbc,
 
 		mavenUrl: opt.MavenUrl,
 		gcrUrl:   opt.GcrUrl,
