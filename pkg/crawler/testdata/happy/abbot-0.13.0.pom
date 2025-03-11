@@ -1,0 +1,7 @@
+<project>
+  <modelVersion>4.0.0</modelVersion>
+  <groupId>abbot</groupId>
+  <artifactId>abbot</artifactId>
+  <name>Abbot</name>
+  <version>0.13.0</version>
+</project>

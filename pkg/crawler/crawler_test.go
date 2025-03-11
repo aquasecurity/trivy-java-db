@@ -7,10 +7,8 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
-	"strings"
 	"testing"
 
-	"github.com/aquasecurity/trivy-java-db/pkg/dbtest"
 	"github.com/aquasecurity/trivy-java-db/pkg/types"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -26,7 +24,6 @@ func TestCrawl(t *testing.T) {
 		limit      int64
 		mavenFiles map[string]string
 		gcrFiles   map[string]string
-		withDb     bool
 		goldenPath string
 		filePath   string
 		wantErr    string
@@ -44,34 +41,15 @@ func TestCrawl(t *testing.T) {
 				"/maven2/abbot/abbot/0.13.0/abbot-0.13.0.jar.sha1":      "testdata/happy/abbot-0.13.0.jar.sha1",
 				"/maven2/abbot/abbot/0.13.0/abbot-0.13.0-copy.jar.sha1": "testdata/happy/abbot-0.13.0-copy.jar.sha1",
 				"/maven2/abbot/abbot/1.4.0/":                            "testdata/happy/abbot_abbot_1.4.0.html",
+				"/maven2/abbot/abbot/1.4.0/abbot-0.13.0.pom":            "testdata/happy/abbot-0.13.0.pom",
 				"/maven2/abbot/abbot/1.4.0/abbot-1.4.0.jar.sha1":        "testdata/happy/abbot-1.4.0.jar.sha1",
 				"/maven2/abbot/abbot/1.4.0/abbot-1.4.0-lite.jar.sha1":   "testdata/happy/abbot-1.4.0-lite.jar.sha1",
 			},
 			gcrFiles: map[string]string{
 				"/maven2/abbot/abbot/0.12.3/abbot-0.12.3.jar.sha1": "testdata/happy/abbot-0.12.3.jar.sha1",
+				"/maven2/abbot/abbot/1.4.0/abbot-1.4.0.pom":        "testdata/happy/abbot-1.4.0.pom",
 			},
 			goldenPath: "testdata/happy/abbot.json.golden",
-			filePath:   "indexes/abbot/abbot.json",
-		},
-		{
-			name:   "happy path with DB",
-			withDb: true,
-			limit:  1,
-			mavenFiles: map[string]string{
-				"/maven2/":                                              "testdata/happy/index.html",
-				"/maven2/abbot/":                                        "testdata/happy/abbot.html",
-				"/maven2/abbot/abbot/":                                  "testdata/happy/abbot_abbot.html",
-				"/maven2/abbot/abbot/maven-metadata.xml":                "testdata/happy/maven-metadata.xml",
-				"/maven2/abbot/abbot/0.12.3/":                           "testdata/happy/abbot_abbot_0.12.3.html",
-				"/maven2/abbot/abbot/0.12.3/abbot-0.12.3.jar.sha1":      "testdata/happy/abbot-0.12.3.jar.sha1",
-				"/maven2/abbot/abbot/0.13.0/":                           "testdata/happy/abbot_abbot_0.13.0.html",
-				"/maven2/abbot/abbot/0.13.0/abbot-0.13.0.jar.sha1":      "testdata/happy/abbot-0.13.0.jar.sha1",
-				"/maven2/abbot/abbot/0.13.0/abbot-0.13.0-copy.jar.sha1": "testdata/happy/abbot-0.13.0-copy.jar.sha1",
-				"/maven2/abbot/abbot/1.4.0/":                            "testdata/happy/abbot_abbot_1.4.0.html",
-				"/maven2/abbot/abbot/1.4.0/abbot-1.4.0.jar.sha1":        "testdata/happy/abbot-1.4.0.jar.sha1",
-				"/maven2/abbot/abbot/1.4.0/abbot-1.4.0-lite.jar.sha1":   "testdata/happy/abbot-1.4.0-lite.jar.sha1",
-			},
-			goldenPath: "testdata/happy/abbot-with-db.json.golden",
 			filePath:   "indexes/abbot/abbot.json",
 		},
 		{
@@ -106,15 +84,6 @@ func TestCrawl(t *testing.T) {
 			defer tsGCR.Close()
 
 			tmpDir := t.TempDir()
-			if tt.withDb {
-				dbc, err := dbtest.InitDB(t, []types.Index{
-					indexAbbot123,
-					indexAbbot130,
-				})
-				require.NoError(t, err)
-
-				tmpDir = filepath.Join(strings.TrimSuffix(dbc.Dir(), "db"))
-			}
 
 			cl, err := crawler.NewCrawler(crawler.Option{
 				MavenUrl: tsMaven.URL + "/maven2/",
