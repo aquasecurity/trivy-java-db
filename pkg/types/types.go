@@ -19,6 +19,6 @@ type Index struct {
 }
 
 type Version struct {
-	Version string
-	SHA1    []byte
+	Version string `json:"version"`
+	SHA1    []byte `json:"sha1"`
 }

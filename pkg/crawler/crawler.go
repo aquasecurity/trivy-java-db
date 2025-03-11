@@ -26,14 +26,18 @@ import (
 	"github.com/aquasecurity/trivy-java-db/pkg/types"
 )
 
-const mavenRepoURL = "https://repo.maven.apache.org/maven2/"
+const (
+	mavenRepoURL = "https://repo.maven.apache.org/maven2/HTTPClient/"
+	gcrURL       = "https://storage.googleapis.com/maven-central/maven2/HTTPClient/"
+)
 
 type Crawler struct {
 	dir  string
 	http *retryablehttp.Client
 	dbc  *db.DB
 
-	rootUrl         string
+	mavenUrl        string
+	gcrUrl          string
 	wg              sync.WaitGroup
 	urlCh           chan string
 	limit           *semaphore.Weighted
@@ -42,7 +46,8 @@ type Crawler struct {
 
 type Option struct {
 	Limit    int64
-	RootUrl  string
+	MavenUrl string
+	GcrUrl   string
 	CacheDir string
 }
 
@@ -54,6 +59,14 @@ func NewCrawler(opt Option) (Crawler, error) {
 	client.RetryWaitMax = 5 * time.Minute
 	client.Backoff = retryablehttp.LinearJitterBackoff
 	client.ResponseLogHook = func(_ retryablehttp.Logger, resp *http.Response) {
+		// GCR doesn't have all the files sha1.
+		// cf. https://github.com/aquasecurity/trivy-java-db/pull/52#issuecomment-2703694693
+		// We get sha1 for these files from maven-central.
+		// So we need to disable warnings for these files to avoid noise.
+		if resp.StatusCode == http.StatusNotFound && strings.HasPrefix(resp.Request.URL.String(), gcrURL) {
+			return
+		}
+
 		if resp.StatusCode != http.StatusOK {
 			slog.Warn("Unexpected http response", slog.String("url", resp.Request.URL.String()), slog.String("status", resp.Status))
 		}
@@ -72,8 +85,12 @@ func NewCrawler(opt Option) (Crawler, error) {
 		return resp, xerrors.Errorf("HTTP request failed after retries: %w", err)
 	}
 
-	if opt.RootUrl == "" {
-		opt.RootUrl = mavenRepoURL
+	if opt.MavenUrl == "" {
+		opt.MavenUrl = mavenRepoURL
+	}
+
+	if opt.GcrUrl == "" {
+		opt.GcrUrl = gcrURL
 	}
 
 	indexDir := filepath.Join(opt.CacheDir, "indexes")
@@ -95,9 +112,10 @@ func NewCrawler(opt Option) (Crawler, error) {
 		http: client,
 		dbc:  &dbc,
 
-		rootUrl: opt.RootUrl,
-		urlCh:   make(chan string, opt.Limit*10),
-		limit:   semaphore.NewWeighted(opt.Limit),
+		mavenUrl: opt.MavenUrl,
+		gcrUrl:   opt.GcrUrl,
+		urlCh:    make(chan string, opt.Limit*10),
+		limit:    semaphore.NewWeighted(opt.Limit),
 	}, nil
 }
 
@@ -110,7 +128,7 @@ func (c *Crawler) Crawl(ctx context.Context) error {
 	defer close(errCh)
 
 	// Add a root url
-	c.urlCh <- c.rootUrl
+	c.urlCh <- c.mavenUrl
 	c.wg.Add(1)
 
 	go func() {
@@ -158,7 +176,6 @@ loop:
 			break loop
 		case err := <-errCh:
 			cancel() // Stop all running Visit functions to avoid writing to closed c.urlCh.
-			close(c.urlCh)
 			return err
 
 		}
@@ -301,15 +318,10 @@ func (c *Crawler) crawlSHA1(ctx context.Context, baseURL string, meta *Metadata,
 		return nil
 	}
 
-	index := &Index{
-		GroupID:     meta.GroupID,
-		ArtifactID:  meta.ArtifactID,
-		Versions:    foundVersions,
-		ArchiveType: types.JarType,
-	}
-	fileName := fmt.Sprintf("%s.json", index.ArtifactID)
-	filePath := filepath.Join(c.dir, index.GroupID, fileName)
-	if err := fileutil.WriteJSON(filePath, index); err != nil {
+	fileName := fmt.Sprintf("%s.json", meta.ArtifactID)
+	dirPath := filepath.Join(strings.Split(meta.GroupID, ".")...)
+	filePath := filepath.Join(c.dir, dirPath, fileName)
+	if err = fileutil.WriteJSON(filePath, foundVersions); err != nil {
 		return xerrors.Errorf("json write error: %w", err)
 	}
 	return nil
@@ -381,10 +393,7 @@ func (c *Crawler) parseMetadata(ctx context.Context, url string) (*Metadata, err
 }
 
 func (c *Crawler) fetchSHA1(ctx context.Context, url string) ([]byte, error) {
-	resp, err := c.httpGet(ctx, url)
-	if err != nil {
-		return nil, xerrors.Errorf("http get error: %w", err)
-	}
+	resp, err := c.tryFetchSHA1(ctx, url)
 	defer func() { _ = resp.Body.Close() }()
 
 	// These are cases when version dir contains link to sha1 file
@@ -420,6 +429,23 @@ func (c *Crawler) fetchSHA1(ctx context.Context, url string) ([]byte, error) {
 		return nil, nil
 	}
 	return sha1b, nil
+}
+
+func (c *Crawler) tryFetchSHA1(ctx context.Context, url string) (*http.Response, error) {
+	gcsURL := strings.ReplaceAll(url, c.mavenUrl, c.gcrUrl)
+	resp, err := c.httpGet(ctx, gcsURL)
+	if err != nil {
+		return nil, xerrors.Errorf("http get error: %w", err)
+	} else if resp.StatusCode == http.StatusOK {
+		return resp, nil
+	}
+
+	resp, err = c.httpGet(ctx, url)
+	if err != nil {
+		return nil, xerrors.Errorf("http get error: %w", err)
+	}
+
+	return resp, nil
 }
 
 func (c *Crawler) httpGet(ctx context.Context, url string) (*http.Response, error) {
