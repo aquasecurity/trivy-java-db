@@ -1,6 +1,7 @@
 package builder
 
 import (
+	"encoding/hex"
 	"encoding/json"
 	"io"
 	"log/slog"
@@ -55,11 +56,12 @@ func (b *Builder) Build(cacheDir string) error {
 		artifactID := strings.TrimSuffix(file, ".json")
 		groupID := strings.ReplaceAll(dir, "/", ".")
 		for _, ver := range versions {
+			sha1, _ := hex.DecodeString(ver.SHA1)
 			indexes = append(indexes, types.Index{
 				GroupID:     groupID,
 				ArtifactID:  artifactID,
 				Version:     ver.Version,
-				SHA1:        ver.SHA1,
+				SHA1:        sha1,
 				ArchiveType: types.JarType,
 			})
 		}
