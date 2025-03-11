@@ -1,8 +1,6 @@
 package crawler
 
-import (
-	"github.com/aquasecurity/trivy-java-db/pkg/types"
-)
+import "github.com/aquasecurity/trivy-java-db/pkg/types"
 
 type Metadata struct {
 	GroupID    string     `xml:"groupId"`
@@ -11,6 +9,8 @@ type Metadata struct {
 }
 
 type Versioning struct {
+	//Latest      string   `xml:"latest"`
+	//Release     string   `xml:"release"`
 	Versions    []string `xml:"versions>version"`
 	LastUpdated string   `xml:"lastUpdated"`
 }

@@ -67,30 +67,29 @@ func init() {
 
 func crawl(ctx context.Context) error {
 	c, err := crawler.NewCrawler(crawler.Option{
-		CacheDir: cacheDir,
 		Limit:    int64(limit),
+		CacheDir: cacheDir,
 	})
 	if err != nil {
 		return xerrors.Errorf("unable to create new Crawler: %w", err)
 	}
-	if err = c.Crawl(ctx); err != nil {
+	if err := c.Crawl(ctx); err != nil {
 		return xerrors.Errorf("crawl error: %w", err)
 	}
 	return nil
 }
 
 func build() error {
-	if err := db.Reset(cacheDir); err != nil {
-		return xerrors.Errorf("unable to reset cache: %w", err)
-	}
 	dbDir := db.Dir(cacheDir)
 	slog.Info("Database", slog.String("path", dbDir))
 	dbc, err := db.New(dbDir)
 	if err != nil {
 		return xerrors.Errorf("db create error: %w", err)
 	}
-	if err = dbc.Init(); err != nil {
-		return xerrors.Errorf("db init error: %w", err)
+	if !db.Exists(dbDir) {
+		if err = dbc.Init(); err != nil {
+			return xerrors.Errorf("db init error: %w", err)
+		}
 	}
 
 	meta := db.NewMetadata(dbDir)
