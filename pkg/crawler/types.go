@@ -16,8 +16,13 @@ type Versioning struct {
 }
 
 type Index struct {
-	GroupID     string
-	ArtifactID  string
-	Versions    []types.Version
-	ArchiveType types.ArchiveType
+	Versions []types.Version
+}
+
+type pomXML struct {
+	Licenses []pomLicense `xml:"licenses>license"`
+}
+
+type pomLicense struct {
+	Name string `xml:"name"`
 }

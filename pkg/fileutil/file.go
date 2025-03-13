@@ -63,7 +63,7 @@ func WriteJSON(filePath string, index interface{}) error {
 		return xerrors.Errorf("unable to create a directory: %w", err)
 	}
 
-	f, err := os.Create(filePath)
+	f, err := os.OpenFile(filePath, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0644)
 	if err != nil {
 		return xerrors.Errorf("unable to open %s: %w", filePath, err)
 	}

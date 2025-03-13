@@ -1,17 +1,18 @@
 package builder
 
 import (
+	"encoding/hex"
 	"encoding/json"
 	"io"
 	"log/slog"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/cheggaaa/pb/v3"
 	"golang.org/x/xerrors"
 	"k8s.io/utils/clock"
 
-	"github.com/aquasecurity/trivy-java-db/pkg/crawler"
 	"github.com/aquasecurity/trivy-java-db/pkg/db"
 	"github.com/aquasecurity/trivy-java-db/pkg/fileutil"
 	"github.com/aquasecurity/trivy-java-db/pkg/types"
@@ -45,17 +46,23 @@ func (b *Builder) Build(cacheDir string) error {
 
 	var indexes []types.Index
 	if err := fileutil.Walk(indexDir, func(r io.Reader, path string) error {
-		index := &crawler.Index{}
-		if err := json.NewDecoder(r).Decode(index); err != nil {
+		var versions []types.Version
+		if err := json.NewDecoder(r).Decode(&versions); err != nil {
 			return xerrors.Errorf("failed to decode index: %w", err)
 		}
-		for _, ver := range index.Versions {
+		dir, file := filepath.Split(path)
+		dir = strings.TrimPrefix(dir, indexDir)
+
+		artifactID := strings.TrimSuffix(file, ".json")
+		groupID := strings.ReplaceAll(dir, "/", ".")
+		for _, ver := range versions {
+			sha1, _ := hex.DecodeString(ver.SHA1)
 			indexes = append(indexes, types.Index{
-				GroupID:     index.GroupID,
-				ArtifactID:  index.ArtifactID,
+				GroupID:     groupID,
+				ArtifactID:  artifactID,
 				Version:     ver.Version,
-				SHA1:        ver.SHA1,
-				ArchiveType: index.ArchiveType,
+				SHA1:        sha1,
+				ArchiveType: types.JarType,
 			})
 		}
 		bar.Increment()
