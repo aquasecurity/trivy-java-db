@@ -1,15 +1,20 @@
 package crawler
 
 import (
+	"cmp"
 	"context"
 	"encoding/hex"
+	"encoding/json"
 	"encoding/xml"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
 	"math/rand"
 	"net/http"
+	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -246,35 +251,39 @@ func (c *Crawler) Visit(ctx context.Context, url string) error {
 }
 
 func (c *Crawler) crawlSHA1(ctx context.Context, baseURL string, meta *Metadata, dirs []string) error {
-	var foundVersions []types.Version
+	fileName := fmt.Sprintf("%s.json", meta.ArtifactID)
+	dirPath := filepath.Join(strings.Split(meta.GroupID, ".")...)
+	filePath := filepath.Join(c.dir, dirPath, fileName)
+
+	var versions []types.Version
+	savedVersions, err := c.getSavedVersions(filePath)
+	if err == nil {
+		versions = savedVersions
+	}
 
 	// Check each version dir to find links to `*.jar.sha1` files.
 	for _, dir := range dirs {
-		dirURL := baseURL + dir
-		sha1Urls, pomUrl, err := c.requiredFilesUrls(ctx, dirURL)
+		dir = strings.TrimSuffix(dir, "/")
+		sha1Urls, pomUrl, err := c.requiredFilesUrls(ctx, baseURL, dir)
 		if err != nil {
-			return xerrors.Errorf("unable to get list of sha1 files from %q: %s", dirURL, err)
+			return xerrors.Errorf("unable to get list of sha1 files from %q: %s", baseURL+dir, err)
 		}
 
-		var licenses []string
-		if pomUrl != "" {
-			ll, err := c.licenses(ctx, pomUrl)
-			if err != nil {
-				c.wrongPomFiles = append(c.wrongPomFiles, fmt.Sprintf("%s (%s)", pomUrl, err))
-			}
-
-			if len(ll) > 0 {
-				licenses = ll
-			}
+		dirVersion := types.Version{
+			Version: dir,
 		}
 
-		// Remove the `/` suffix to correctly compare file versions with version from directory name.
-		dirVersion := strings.TrimSuffix(dir, "/")
-		var dirVersionSha1 string
-		var versions []types.Version
-
+		var versionsFromDir []types.Version
 		for _, sha1Url := range sha1Urls {
 			ver := versionFromSha1URL(meta.ArtifactID, sha1Url)
+
+			// Skip check version, if indexes already contain this version
+			if slices.ContainsFunc(versions, func(v types.Version) bool {
+				return v.Version == ver
+			}) {
+				continue
+			}
+
 			sha1, err := c.fetchSHA1(ctx, sha1Url)
 			if err != nil {
 				return xerrors.Errorf("unable to fetch sha1: %s", err)
@@ -284,46 +293,76 @@ func (c *Crawler) crawlSHA1(ctx context.Context, baseURL string, meta *Metadata,
 			// Avoid overwriting dirVersion when inserting versions into the database (sha1 is uniq blob)
 			// e.g. `cudf-0.14-cuda10-1.jar.sha1` should not overwrite `cudf-0.14.jar.sha1`
 			// https://repo.maven.apache.org/maven2/ai/rapids/cudf/0.14/
-			if ver == dirVersion {
-				dirVersionSha1 = sha1
-			} else {
-				versions = append(versions, types.Version{
-					Version: ver,
-					SHA1:    sha1,
-				})
+			if ver == dirVersion.Version {
+				dirVersion.SHA1 = sha1
+
+				// Save licenses for dir version
+				if pomUrl != "" {
+					ll, err := c.licenses(ctx, pomUrl)
+					if err != nil {
+						c.wrongPomFiles = append(c.wrongPomFiles, fmt.Sprintf("%s (%s)", pomUrl, err))
+					}
+
+					if len(ll) > 0 {
+						dirVersion.Licenses = ll
+					}
+				}
+				continue
 			}
-		}
-		// Remove duplicates of dirVersionSha1
-		versions = lo.Filter(versions, func(v types.Version, _ int) bool {
-			return v.SHA1 != dirVersionSha1
-		})
 
-		if dirVersionSha1 != "" {
-			versions = append(versions, types.Version{
-				Version:  dirVersion,
-				SHA1:     dirVersionSha1,
-				Licenses: licenses,
+			versionsFromDir = append(versionsFromDir, types.Version{
+				Version: ver,
+				SHA1:    sha1,
 			})
+
 		}
 
-		foundVersions = append(foundVersions, versions...)
+		if dirVersion.SHA1 != "" {
+			// Remove duplicates of dirVersionSha1
+			versionsFromDir = lo.Filter(versionsFromDir, func(v types.Version, _ int) bool {
+				return v.SHA1 != dirVersion.SHA1
+			})
+
+			versionsFromDir = append(versionsFromDir, dirVersion)
+		}
+
+		versions = append(versions, versionsFromDir...)
 	}
 
-	if len(foundVersions) == 0 {
+	if len(versions) == 0 || len(savedVersions) == len(versions) {
 		return nil
 	}
 
-	fileName := fmt.Sprintf("%s.json", meta.ArtifactID)
-	dirPath := filepath.Join(strings.Split(meta.GroupID, ".")...)
-	filePath := filepath.Join(c.dir, dirPath, fileName)
-	if err := fileutil.WriteJSON(filePath, foundVersions); err != nil {
+	slices.SortFunc(versions, func(a, b types.Version) int {
+		return cmp.Compare(a.Version, b.Version)
+	})
+
+	if err = fileutil.WriteJSON(filePath, versions); err != nil {
 		return xerrors.Errorf("json write error: %w", err)
 	}
 	return nil
 }
 
+func (c *Crawler) getSavedVersions(filePath string) ([]types.Version, error) {
+	f, err := os.ReadFile(filePath)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil, nil
+		}
+		return nil, xerrors.Errorf("unable to index read file %s: %w", filePath, err)
+	}
+
+	var vers []types.Version
+	if err = json.Unmarshal(f, &vers); err != nil {
+		return nil, xerrors.Errorf("unable to unmarshal file %s: %w", filePath, err)
+	}
+
+	return vers, nil
+}
+
 // requiredFilesUrls returns urls for *.jar.sha1 and *.pom files
-func (c *Crawler) requiredFilesUrls(ctx context.Context, url string) ([]string, string, error) {
+func (c *Crawler) requiredFilesUrls(ctx context.Context, baseURL, dir string) ([]string, string, error) {
+	url := baseURL + dir + "/"
 	resp, err := c.httpGet(ctx, url)
 	if err != nil {
 		return nil, "", xerrors.Errorf("http get error: %w", err)
@@ -343,7 +382,7 @@ func (c *Crawler) requiredFilesUrls(ctx context.Context, url string) ([]string, 
 	d.Find("a").Each(func(i int, selection *goquery.Selection) {
 		link := linkFromSelection(selection)
 		fullLink := url + link
-		if strings.HasSuffix(link, ".pom") {
+		if strings.HasSuffix(link, dir+".pom") {
 			pomUrl = fullLink
 			return
 		}
