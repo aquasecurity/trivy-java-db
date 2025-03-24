@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/hex"
+	"encoding/json"
 	"encoding/xml"
 	"fmt"
 	"io"
@@ -13,6 +14,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/PuerkitoBio/goquery"
@@ -26,7 +28,10 @@ import (
 	"github.com/aquasecurity/trivy-java-db/pkg/types"
 )
 
-const mavenRepoURL = "https://repo.maven.apache.org/maven2/"
+const (
+	mavenRepoURL = "https://repo.maven.apache.org/maven2/"
+	gcsURL       = "https://storage.googleapis.com/storage/v1/b/maven-central/o"
+)
 
 type Crawler struct {
 	dir  string
@@ -38,6 +43,9 @@ type Crawler struct {
 	urlCh           chan string
 	limit           *semaphore.Weighted
 	wrongSHA1Values []string
+
+	// TODO update that
+	count int64
 }
 
 type Option struct {
@@ -106,38 +114,45 @@ func (c *Crawler) Crawl(ctx context.Context) error {
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 
+	rootDirs, err := c.rootDirs(ctx)
+	if err != nil {
+		return xerrors.Errorf("unable to get root dirs: %w", err)
+	}
+
 	errCh := make(chan error)
 	defer close(errCh)
 
 	// Add a root url
 	c.urlCh <- c.rootUrl
 	c.wg.Add(1)
+	crawlDone := make(chan struct{})
 
 	go func() {
 		c.wg.Wait()
+		crawlDone <- struct{}{}
 		close(c.urlCh)
 	}()
 
-	crawlDone := make(chan struct{})
-
 	// For the HTTP loop
 	go func() {
-		defer func() { crawlDone <- struct{}{} }()
+		for _, rootDir := range rootDirs {
+			// TODO - move this
+			//count++
+			//if count%1000 == 0 {
+			//	slog.Info("Indexed digests", slog.Int("count", count))
+			//}
 
-		var count int
-		for url := range c.urlCh {
-			count++
-			if count%1000 == 0 {
-				slog.Info("Indexed digests", slog.Int("count", count))
-			}
-			if err := c.limit.Acquire(ctx, 1); err != nil {
+			// TODO update that
+			if err = c.limit.Acquire(ctx, 1); err != nil {
 				errCh <- xerrors.Errorf("semaphore acquire error: %w", err)
 				return
 			}
-			go func(url string) {
+
+			go func(rootDir string) {
 				defer c.limit.Release(1)
 				defer c.wg.Done()
-				if err := c.Visit(ctx, url); err != nil {
+				c.wg.Add(1)
+				if err = c.crawlRootDir(ctx, rootDir); err != nil {
 					select {
 					// Context can be canceled if we receive an error from another Visit function.
 					case <-ctx.Done():
@@ -146,7 +161,7 @@ func (c *Crawler) Crawl(ctx context.Context) error {
 						return
 					}
 				}
-			}(url)
+			}(rootDir)
 		}
 	}()
 
@@ -172,94 +187,182 @@ loop:
 	return nil
 }
 
-func (c *Crawler) Visit(ctx context.Context, url string) error {
-	resp, err := c.httpGet(ctx, url)
+func (c *Crawler) rootDirs(ctx context.Context) ([]string, error) {
+	resp, err := c.httpGet(ctx, c.rootUrl)
 	if err != nil {
-		return xerrors.Errorf("http get error: %w", err)
+		return nil, xerrors.Errorf("http get error: %w", err)
 	}
 	defer resp.Body.Close()
 
-	// There are cases when url doesn't exist
-	// e.g. https://repo.maven.apache.org/maven2/io/springboot/ai/spring-ai-anthropic/
 	if resp.StatusCode != http.StatusOK {
-		return nil
+		return nil, xerrors.Errorf("unable to get root URL: %s", resp.Status)
 	}
 
 	d, err := goquery.NewDocumentFromReader(resp.Body)
 	if err != nil {
-		return xerrors.Errorf("can't create new goquery doc: %w", err)
+		return nil, xerrors.Errorf("can't create new goquery doc: %w", err)
 	}
 
-	var children []string
-	var foundMetadata bool
+	var rootDirs []string
 	d.Find("a").Each(func(i int, selection *goquery.Selection) {
 		link := linkFromSelection(selection)
-		if link == "maven-metadata.xml" {
-			foundMetadata = true
-			return
-		} else if link == "../" || !strings.HasSuffix(link, "/") {
+		if link == "../" || !strings.HasSuffix(link, "/") {
 			// only `../` and dirs have `/` suffix. We don't need to check other files.
 			return
 		}
-		children = append(children, link)
+		rootDirs = append(rootDirs, link)
 	})
 
-	if foundMetadata {
-		meta, err := c.parseMetadata(ctx, url+"maven-metadata.xml")
-		if err != nil {
-			return xerrors.Errorf("metadata parse error: %w", err)
-		}
-		if meta != nil {
-			if err = c.crawlSHA1(ctx, url, meta, children); err != nil {
-				return err
-			}
-			// Return here since there is no need to crawl dirs anymore.
-			return nil
-		}
+	return rootDirs, nil
+}
+
+func (c *Crawler) crawlRootDir(ctx context.Context, rootDir string) error {
+	// TODO don't use const
+	req, err := retryablehttp.NewRequestWithContext(ctx, http.MethodGet, gcsURL, nil)
+	if err != nil {
+		return xerrors.Errorf("unable to create a HTTP request: %w", err)
 	}
 
-	c.wg.Add(len(children))
+	query := req.URL.Query()
+	query.Set("prefix", "maven2/"+rootDir)
+	query.Set("matchGlob", "**/*.jar.sha1")
+	query.Set("maxResults", "5000")
+	req.URL.RawQuery = query.Encode()
 
-	go func() {
-		for _, child := range children {
-			select {
-			// Context can be canceled if we receive an error from another Visit function.
-			case <-ctx.Done():
-				return
-			case c.urlCh <- url + child:
-				continue
-			}
+	var items []string
+	for {
+		r, err := c.rootDirObjects(ctx, req)
+		if err != nil {
+			return xerrors.Errorf("unable to get root dir objects: %w", err)
 		}
-	}()
+		query.Set("pageToken", r.NextPageToken)
+		req.URL.RawQuery = query.Encode()
+		items = append(items, lo.Map(r.Items, func(item Item, _ int) string {
+			return item.Name
+		})...)
+
+		if r.NextPageToken == "" {
+			break
+		}
+
+	}
+
+	err = c.parseItems(ctx, items)
+	if err != nil {
+		return xerrors.Errorf("unable to parse API response: %w", err)
+	}
 
 	return nil
 }
 
-func (c *Crawler) crawlSHA1(ctx context.Context, baseURL string, meta *Metadata, dirs []string) error {
+func (c *Crawler) rootDirObjects(ctx context.Context, req *retryablehttp.Request) (apiResponse, error) {
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return apiResponse{}, xerrors.Errorf("http error (%s): %w", req.URL.String(), err)
+	}
+	defer resp.Body.Close()
+
+	r := apiResponse{}
+
+	err = json.NewDecoder(resp.Body).Decode(&r)
+	if err != nil {
+		return apiResponse{}, xerrors.Errorf("unable to parse API response: %w", err)
+	}
+
+	return r, nil
+}
+
+type apiResponse struct {
+	NextPageToken string `json:"nextPageToken,omitempty"`
+	Items         []Item `json:"items,omitempty"`
+}
+
+type Item struct {
+	Name string `json:"name"`
+}
+
+func (c *Crawler) parseItems(ctx context.Context, items []string) error {
+	var prevGroupID, prevArtifactID string
+	itemsByVersionDir := map[string][]string{}
+	for _, itemName := range items {
+		// Don't include sources, test, javadocs, scaladoc files
+		if strings.HasSuffix(itemName, "sources.jar.sha1") ||
+			strings.HasSuffix(itemName, "test.jar.sha1") || strings.HasSuffix(itemName, "tests.jar.sha1") ||
+			strings.HasSuffix(itemName, "javadoc.jar.sha1") || strings.HasSuffix(itemName, "scaladoc.jar.sha1") {
+			continue
+		}
+
+		groupID, artifactID, versionDir, _ := parseItemName(itemName)
+		if prevGroupID != groupID || prevArtifactID != artifactID {
+			err := c.crawlSHA1(ctx, prevGroupID, prevArtifactID, itemsByVersionDir)
+			if err != nil {
+				return xerrors.Errorf("unable to crawl SHA1: %w", err)
+			}
+
+			// Index saved in crawlSHA1
+			// So we need to clear previous GAV
+			prevGroupID = groupID
+			prevArtifactID = artifactID
+			itemsByVersionDir = map[string][]string{}
+		}
+
+		itemsByVersionDir[versionDir] = append(itemsByVersionDir[versionDir], itemName)
+	}
+
+	// Save last artifact
+	err := c.crawlSHA1(ctx, prevGroupID, prevArtifactID, itemsByVersionDir)
+	if err != nil {
+		return xerrors.Errorf("unable to crawl SHA1: %w", err)
+	}
+
+	return nil
+}
+
+// parseItemName parses item name and returns groupID, artifactID and version
+func parseItemName(name string) (string, string, string, string) {
+	name = strings.TrimPrefix(name, "maven2/")
+	ss := strings.Split(name, "/")
+
+	// There are cases when name is incorrect
+	// TODO add link
+	if len(ss) < 4 {
+		return "", "", "", ""
+	}
+	groupID := strings.Join(ss[:len(ss)-3], ".")
+	artifactID := ss[len(ss)-3]
+	versionDir := ss[len(ss)-2]
+	// Take version from filename
+	version := strings.TrimSuffix(strings.TrimPrefix(ss[len(ss)-1], artifactID+"-"), ".jar.sha1")
+	return groupID, artifactID, versionDir, version
+
+}
+
+func (c *Crawler) crawlSHA1(ctx context.Context, groupID, artifactID string, dirs map[string][]string) error {
+	if groupID == "" || artifactID == "" {
+		return nil
+	}
+
+	atomic.AddInt64(&c.count, 1)
+	if c.count%100 == 0 {
+		slog.Info(fmt.Sprintf("Crawled %d artifacts", atomic.LoadInt64(&c.count)))
+	}
+
 	var foundVersions []types.Version
 	// Get versions from the DB (if exists) to reduce the number of requests to the server
-	savedVersion, err := c.versionsFromDB(meta.ArtifactID, meta.GroupID)
+	savedVersion, err := c.versionsFromDB(groupID, artifactID)
 	if err != nil {
 		return xerrors.Errorf("unable to get list of versions from DB: %w", err)
 	}
 	// Check each version dir to find links to `*.jar.sha1` files.
-	for _, dir := range dirs {
-		dirURL := baseURL + dir
-		sha1Urls, err := c.sha1Urls(ctx, dirURL)
-		if err != nil {
-			return xerrors.Errorf("unable to get list of sha1 files from %q: %s", dirURL, err)
-		}
-
-		// Remove the `/` suffix to correctly compare file versions with version from directory name.
-		dirVersion := strings.TrimSuffix(dir, "/")
+	for dirVersion, itemNames := range dirs {
 		var dirVersionSha1 []byte
 		var versions []types.Version
 
-		for _, sha1Url := range sha1Urls {
-			ver := versionFromSha1URL(meta.ArtifactID, sha1Url)
+		for _, itemName := range itemNames {
+			_, _, _, ver := parseItemName(itemName)
 			sha1, ok := savedVersion[ver]
 			if !ok {
-				sha1, err = c.fetchSHA1(ctx, sha1Url)
+				sha1, err = c.fetchSHA1(ctx, itemName)
 				if err != nil {
 					return xerrors.Errorf("unable to fetch sha1: %s", err)
 				}
@@ -302,14 +405,14 @@ func (c *Crawler) crawlSHA1(ctx context.Context, baseURL string, meta *Metadata,
 	}
 
 	index := &Index{
-		GroupID:     meta.GroupID,
-		ArtifactID:  meta.ArtifactID,
+		GroupID:     groupID,
+		ArtifactID:  artifactID,
 		Versions:    foundVersions,
 		ArchiveType: types.JarType,
 	}
 	fileName := fmt.Sprintf("%s.json", index.ArtifactID)
 	filePath := filepath.Join(c.dir, index.GroupID, fileName)
-	if err := fileutil.WriteJSON(filePath, index); err != nil {
+	if err = fileutil.WriteJSON(filePath, index); err != nil {
 		return xerrors.Errorf("json write error: %w", err)
 	}
 	return nil
@@ -380,7 +483,8 @@ func (c *Crawler) parseMetadata(ctx context.Context, url string) (*Metadata, err
 	return &meta, nil
 }
 
-func (c *Crawler) fetchSHA1(ctx context.Context, url string) ([]byte, error) {
+func (c *Crawler) fetchSHA1(ctx context.Context, itemName string) ([]byte, error) {
+	url := "https://storage.googleapis.com/maven-central/" + itemName
 	resp, err := c.httpGet(ctx, url)
 	if err != nil {
 		return nil, xerrors.Errorf("http get error: %w", err)
@@ -437,7 +541,7 @@ func (c *Crawler) httpGet(ctx context.Context, url string) (*http.Response, erro
 	return resp, nil
 }
 
-func (c *Crawler) versionsFromDB(artifactID, groupID string) (map[string][]byte, error) {
+func (c *Crawler) versionsFromDB(groupID, artifactID string) (map[string][]byte, error) {
 	if c.dbc == nil {
 		return nil, nil
 	}
@@ -448,15 +552,6 @@ func randomSleep() {
 	// Seed rand
 	r := rand.New(rand.NewSource(int64(time.Now().Nanosecond())))
 	time.Sleep(time.Duration(r.Float64() * float64(100*time.Millisecond)))
-}
-
-func versionFromSha1URL(artifactId, sha1URL string) string {
-	ss := strings.Split(sha1URL, "/")
-	fileName := ss[len(ss)-1]
-	if !strings.HasPrefix(fileName, artifactId) {
-		return ""
-	}
-	return strings.TrimSuffix(strings.TrimPrefix(fileName, artifactId+"-"), ".jar.sha1")
 }
 
 // linkFromSelection returns the link from goquery.Selection.
