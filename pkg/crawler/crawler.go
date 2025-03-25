@@ -294,10 +294,19 @@ func (c *Crawler) parseItems(ctx context.Context, items []string) error {
 
 		groupID, artifactID, versionDir, _ := parseItemName(itemName)
 		if prevGroupID != groupID || prevArtifactID != artifactID {
-			err := c.crawlSHA1(ctx, prevGroupID, prevArtifactID, itemsByVersionDir)
-			if err != nil {
-				return xerrors.Errorf("unable to crawl SHA1: %w", err)
+			if err := c.limit.Acquire(ctx, 1); err != nil {
+				return xerrors.Errorf("semaphore acquire error: %w", err)
 			}
+			go func(ctx context.Context, groupID, artifactID string, items map[string][]string) {
+				defer c.limit.Release(1)
+				defer c.wg.Done()
+				c.wg.Add(1)
+				err := c.crawlSHA1(ctx, groupID, artifactID, items)
+				if err != nil {
+					slog.Warn("crawlSHA1 failed", slog.String("error", err.Error()))
+					//return xerrors.Errorf("unable to crawl SHA1: %w", err)
+				}
+			}(ctx, prevGroupID, prevArtifactID, itemsByVersionDir)
 
 			// Index saved in crawlSHA1
 			// So we need to clear previous GAV
@@ -343,7 +352,7 @@ func (c *Crawler) crawlSHA1(ctx context.Context, groupID, artifactID string, dir
 	}
 
 	atomic.AddInt64(&c.count, 1)
-	if c.count%100 == 0 {
+	if c.count%1000 == 0 {
 		slog.Info(fmt.Sprintf("Crawled %d artifacts", atomic.LoadInt64(&c.count)))
 	}
 
