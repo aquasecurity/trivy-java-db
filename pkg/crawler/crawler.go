@@ -163,6 +163,8 @@ func (c *Crawler) Crawl(ctx context.Context) error {
 				}
 			}(rootDir)
 		}
+
+		c.wg.Done() // Close first WG
 	}()
 
 loop:
