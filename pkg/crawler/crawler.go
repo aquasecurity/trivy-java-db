@@ -111,9 +111,10 @@ func NewCrawler(opt Option) (Crawler, error) {
 	}
 
 	return Crawler{
-		dir:  indexDir,
-		http: client,
-		dbc:  &dbc,
+		dir:   indexDir,
+		http:  client,
+		dbc:   &dbc,
+		errCh: make(chan error),
 
 		mavenRepoURL: opt.MavenUrl,
 		gcrRepoURL:   opt.GcsRepoUrl,
