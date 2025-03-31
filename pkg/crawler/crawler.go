@@ -30,7 +30,7 @@ import (
 const (
 	mavenRepoURL = "https://repo.maven.apache.org/maven2/"
 	gcsRepoURL   = "https://storage.googleapis.com/maven-central/"
-	gcsApiURL    = "https://storage.googleapis.com/storage/v1/b/maven-central/o"
+	gcsApiURL    = "https://storage.googleapis.com/storage/v1/b/maven-central/o/"
 )
 
 type Crawler struct {
@@ -90,6 +90,10 @@ func NewCrawler(opt Option) (Crawler, error) {
 
 	if opt.GcsApiUrl == "" {
 		opt.GcsApiUrl = gcsApiURL
+	}
+
+	if opt.GcsRepoUrl == "" {
+		opt.GcsRepoUrl = gcsRepoURL
 	}
 
 	indexDir := filepath.Join(opt.CacheDir, "indexes")
