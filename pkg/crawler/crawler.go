@@ -5,7 +5,6 @@ import (
 	"context"
 	"encoding/hex"
 	"encoding/json"
-	"encoding/xml"
 	"fmt"
 	"io"
 	"log/slog"
@@ -30,7 +29,8 @@ import (
 
 const (
 	mavenRepoURL = "https://repo.maven.apache.org/maven2/"
-	gcsURL       = "https://storage.googleapis.com/storage/v1/b/maven-central/o"
+	gcsRepoURL   = "https://storage.googleapis.com/maven-central/"
+	gcsApiURL    = "https://storage.googleapis.com/storage/v1/b/maven-central/o"
 )
 
 type Crawler struct {
@@ -38,20 +38,24 @@ type Crawler struct {
 	http *retryablehttp.Client
 	dbc  *db.DB
 
-	rootUrl         string
+	mavenRepoURL string
+	gcrRepoURL   string
+	gcsApiURL    string
+
 	wg              sync.WaitGroup
-	urlCh           chan string
 	limit           *semaphore.Weighted
+	errCh           chan error
 	wrongSHA1Values []string
 
-	// TODO update that
 	count int64
 }
 
 type Option struct {
-	Limit    int64
-	RootUrl  string
-	CacheDir string
+	Limit      int64
+	MavenUrl   string
+	GcsRepoUrl string
+	GcsApiUrl  string
+	CacheDir   string
 }
 
 func NewCrawler(opt Option) (Crawler, error) {
@@ -80,8 +84,12 @@ func NewCrawler(opt Option) (Crawler, error) {
 		return resp, xerrors.Errorf("HTTP request failed after retries: %w", err)
 	}
 
-	if opt.RootUrl == "" {
-		opt.RootUrl = mavenRepoURL
+	if opt.MavenUrl == "" {
+		opt.MavenUrl = mavenRepoURL
+	}
+
+	if opt.GcsApiUrl == "" {
+		opt.GcsApiUrl = gcsApiURL
 	}
 
 	indexDir := filepath.Join(opt.CacheDir, "indexes")
@@ -103,9 +111,10 @@ func NewCrawler(opt Option) (Crawler, error) {
 		http: client,
 		dbc:  &dbc,
 
-		rootUrl: opt.RootUrl,
-		urlCh:   make(chan string, opt.Limit*10),
-		limit:   semaphore.NewWeighted(opt.Limit),
+		mavenRepoURL: opt.MavenUrl,
+		gcrRepoURL:   opt.GcsRepoUrl,
+		gcsApiURL:    opt.GcsApiUrl,
+		limit:        semaphore.NewWeighted(opt.Limit),
 	}, nil
 }
 
@@ -119,32 +128,20 @@ func (c *Crawler) Crawl(ctx context.Context) error {
 		return xerrors.Errorf("unable to get root dirs: %w", err)
 	}
 
-	errCh := make(chan error)
-	defer close(errCh)
-
-	// Add a root url
-	c.urlCh <- c.rootUrl
 	c.wg.Add(1)
 	crawlDone := make(chan struct{})
 
 	go func() {
 		c.wg.Wait()
+		close(c.errCh)
 		crawlDone <- struct{}{}
-		close(c.urlCh)
 	}()
 
-	// For the HTTP loop
+	// Check all root dirs
 	go func() {
 		for _, rootDir := range rootDirs {
-			// TODO - move this
-			//count++
-			//if count%1000 == 0 {
-			//	slog.Info("Indexed digests", slog.Int("count", count))
-			//}
-
-			// TODO update that
 			if err = c.limit.Acquire(ctx, 1); err != nil {
-				errCh <- xerrors.Errorf("semaphore acquire error: %w", err)
+				c.errCh <- xerrors.Errorf("semaphore acquire error: %w", err)
 				return
 			}
 
@@ -154,10 +151,10 @@ func (c *Crawler) Crawl(ctx context.Context) error {
 				c.wg.Add(1)
 				if err = c.crawlRootDir(ctx, rootDir); err != nil {
 					select {
-					// Context can be canceled if we receive an error from another Visit function.
+					// Context can be canceled if we receive an error from another crawlRootDir function.
 					case <-ctx.Done():
 						return
-					case errCh <- err:
+					case c.errCh <- err:
 						return
 					}
 				}
@@ -173,9 +170,8 @@ loop:
 		// Wait for DB update to complete
 		case <-crawlDone:
 			break loop
-		case err := <-errCh:
-			cancel() // Stop all running Visit functions to avoid writing to closed c.urlCh.
-			close(c.urlCh)
+		case err := <-c.errCh:
+			cancel() // Stop all running crawlRootDir functions to avoid writing to closed c.urlCh.
 			return err
 
 		}
@@ -190,7 +186,7 @@ loop:
 }
 
 func (c *Crawler) rootDirs(ctx context.Context) ([]string, error) {
-	resp, err := c.httpGet(ctx, c.rootUrl)
+	resp, err := c.httpGet(ctx, c.mavenRepoURL)
 	if err != nil {
 		return nil, xerrors.Errorf("http get error: %w", err)
 	}
@@ -219,8 +215,7 @@ func (c *Crawler) rootDirs(ctx context.Context) ([]string, error) {
 }
 
 func (c *Crawler) crawlRootDir(ctx context.Context, rootDir string) error {
-	// TODO don't use const
-	req, err := retryablehttp.NewRequestWithContext(ctx, http.MethodGet, gcsURL, nil)
+	req, err := retryablehttp.NewRequestWithContext(ctx, http.MethodGet, c.gcsApiURL, nil)
 	if err != nil {
 		return xerrors.Errorf("unable to create a HTTP request: %w", err)
 	}
@@ -257,30 +252,21 @@ func (c *Crawler) crawlRootDir(ctx context.Context, rootDir string) error {
 	return nil
 }
 
-func (c *Crawler) rootDirObjects(ctx context.Context, req *retryablehttp.Request) (apiResponse, error) {
-	resp, err := c.http.Do(req)
+func (c *Crawler) rootDirObjects(ctx context.Context, req *retryablehttp.Request) (gcsApiResponse, error) {
+	resp, err := c.httpGet(ctx, req.URL.String())
 	if err != nil {
-		return apiResponse{}, xerrors.Errorf("http error (%s): %w", req.URL.String(), err)
+		return gcsApiResponse{}, xerrors.Errorf("http error (%s): %w", req.URL.String(), err)
 	}
 	defer resp.Body.Close()
 
-	r := apiResponse{}
+	r := gcsApiResponse{}
 
 	err = json.NewDecoder(resp.Body).Decode(&r)
 	if err != nil {
-		return apiResponse{}, xerrors.Errorf("unable to parse API response: %w", err)
+		return gcsApiResponse{}, xerrors.Errorf("unable to parse API response: %w", err)
 	}
 
 	return r, nil
-}
-
-type apiResponse struct {
-	NextPageToken string `json:"nextPageToken,omitempty"`
-	Items         []Item `json:"items,omitempty"`
-}
-
-type Item struct {
-	Name string `json:"name"`
 }
 
 func (c *Crawler) parseItems(ctx context.Context, items []string) error {
@@ -334,8 +320,7 @@ func parseItemName(name string) (string, string, string, string) {
 	name = strings.TrimPrefix(name, "maven2/")
 	ss := strings.Split(name, "/")
 
-	// There are cases when name is incorrect
-	// TODO add link
+	// There are cases when name is incorrect (e.g. name doesn't have artifactID)
 	if len(ss) < 4 {
 		return "", "", "", ""
 	}
@@ -457,45 +442,8 @@ func (c *Crawler) sha1Urls(ctx context.Context, url string) ([]string, error) {
 	return sha1URLs, nil
 }
 
-func (c *Crawler) parseMetadata(ctx context.Context, url string) (*Metadata, error) {
-	// We need to skip metadata.xml files from groupID folder
-	// e.g. https://repo.maven.apache.org/maven2/args4j/maven-metadata.xml
-	if len(strings.Split(url, "/")) < 7 {
-		return nil, nil
-	}
-
-	resp, err := c.httpGet(ctx, url)
-	if err != nil {
-		return nil, xerrors.Errorf("http get error: %w", err)
-	}
-	defer resp.Body.Close()
-
-	// There are cases when metadata.xml file doesn't exist
-	// e.g. https://repo.maven.apache.org/maven2/io/springboot/ai/spring-ai-vertex-ai-gemini-spring-boot-starter/maven-metadata.xml
-	if resp.StatusCode != http.StatusOK {
-		return nil, nil
-	}
-
-	var meta Metadata
-	if err = xml.NewDecoder(resp.Body).Decode(&meta); err != nil {
-		return nil, xerrors.Errorf("%s decode error: %w", url, err)
-	}
-	// Skip metadata without `GroupID` and ArtifactID` fields
-	// e.g. https://repo.maven.apache.org/maven2/at/molindo/maven-metadata.xml
-	if meta.ArtifactID == "" || meta.GroupID == "" {
-		return nil, nil
-	}
-
-	// we don't need metadata.xml files from version folder
-	// e.g. https://repo.maven.apache.org/maven2/HTTPClient/HTTPClient/0.3-3/maven-metadata.xml
-	if len(meta.Versioning.Versions) == 0 {
-		return nil, nil
-	}
-	return &meta, nil
-}
-
 func (c *Crawler) fetchSHA1(ctx context.Context, itemName string) ([]byte, error) {
-	url := "https://storage.googleapis.com/maven-central/" + itemName
+	url := c.gcrRepoURL + itemName
 	resp, err := c.httpGet(ctx, url)
 	if err != nil {
 		return nil, xerrors.Errorf("http get error: %w", err)
