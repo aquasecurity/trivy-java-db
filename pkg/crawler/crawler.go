@@ -11,6 +11,7 @@ import (
 	"math/rand"
 	"net/http"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -404,6 +405,10 @@ func (c *Crawler) crawlSHA1(ctx context.Context, groupID, artifactID string, dir
 	if len(foundVersions) == 0 {
 		return nil
 	}
+
+	slices.SortFunc(foundVersions, func(a, b types.Version) int {
+		return strings.Compare(a.Version, b.Version)
+	})
 
 	index := &Index{
 		GroupID:     groupID,
