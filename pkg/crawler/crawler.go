@@ -28,9 +28,8 @@ import (
 )
 
 const (
-	mavenRepoURL = "https://repo.maven.apache.org/maven2/"
-	gcsRepoURL   = "https://storage.googleapis.com/maven-central/"
-	gcsApiURL    = "https://storage.googleapis.com/storage/v1/b/maven-central/o/"
+	mavenURL = "https://repo.maven.apache.org/maven2/"
+	gcsURL   = "https://storage.googleapis.com/"
 )
 
 type Crawler struct {
@@ -38,9 +37,8 @@ type Crawler struct {
 	http *retryablehttp.Client
 	dbc  *db.DB
 
-	mavenRepoURL string
-	gcrRepoURL   string
-	gcsApiURL    string
+	mavenURL string
+	gcrURL   string
 
 	wg              sync.WaitGroup
 	limit           *semaphore.Weighted
@@ -51,11 +49,10 @@ type Crawler struct {
 }
 
 type Option struct {
-	Limit      int64
-	MavenUrl   string
-	GcsRepoUrl string
-	GcsApiUrl  string
-	CacheDir   string
+	Limit    int64
+	MavenUrl string
+	GcsUrl   string
+	CacheDir string
 }
 
 func NewCrawler(opt Option) (Crawler, error) {
@@ -85,15 +82,11 @@ func NewCrawler(opt Option) (Crawler, error) {
 	}
 
 	if opt.MavenUrl == "" {
-		opt.MavenUrl = mavenRepoURL
+		opt.MavenUrl = mavenURL
 	}
 
-	if opt.GcsApiUrl == "" {
-		opt.GcsApiUrl = gcsApiURL
-	}
-
-	if opt.GcsRepoUrl == "" {
-		opt.GcsRepoUrl = gcsRepoURL
+	if opt.GcsUrl == "" {
+		opt.GcsUrl = gcsURL
 	}
 
 	indexDir := filepath.Join(opt.CacheDir, "indexes")
@@ -116,10 +109,9 @@ func NewCrawler(opt Option) (Crawler, error) {
 		dbc:   &dbc,
 		errCh: make(chan error),
 
-		mavenRepoURL: opt.MavenUrl,
-		gcrRepoURL:   opt.GcsRepoUrl,
-		gcsApiURL:    opt.GcsApiUrl,
-		limit:        semaphore.NewWeighted(opt.Limit),
+		mavenURL: opt.MavenUrl,
+		gcrURL:   opt.GcsUrl,
+		limit:    semaphore.NewWeighted(opt.Limit),
 	}, nil
 }
 
@@ -128,6 +120,7 @@ func (c *Crawler) Crawl(ctx context.Context) error {
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 
+	// Get root directories from maven central to use working API prefixes.
 	rootDirs, err := c.rootDirs(ctx)
 	if err != nil {
 		return xerrors.Errorf("unable to get root dirs: %w", err)
@@ -190,8 +183,10 @@ loop:
 	return nil
 }
 
+// rootDirs returns root dirs from maven central.
+// It is required because GCS doesn't return artifacts for `maven2/` prefix.
 func (c *Crawler) rootDirs(ctx context.Context) ([]string, error) {
-	resp, err := c.httpGet(ctx, c.mavenRepoURL)
+	resp, err := c.httpGet(ctx, c.mavenURL)
 	if err != nil {
 		return nil, xerrors.Errorf("http get error: %w", err)
 	}
@@ -220,7 +215,8 @@ func (c *Crawler) rootDirs(ctx context.Context) ([]string, error) {
 }
 
 func (c *Crawler) crawlRootDir(ctx context.Context, rootDir string) error {
-	req, err := retryablehttp.NewRequestWithContext(ctx, http.MethodGet, c.gcsApiURL, nil)
+	url := c.gcrURL + "storage/v1/b/maven-central/o/" // Add API endpoint
+	req, err := retryablehttp.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
 		return xerrors.Errorf("unable to create a HTTP request: %w", err)
 	}
@@ -297,7 +293,7 @@ func (c *Crawler) parseItems(ctx context.Context, items []string) error {
 				err := c.crawlSHA1(ctx, groupID, artifactID, items)
 				if err != nil {
 					slog.Warn("crawlSHA1 failed", slog.String("error", err.Error()))
-					//return xerrors.Errorf("unable to crawl SHA1: %w", err)
+					return
 				}
 			}(ctx, prevGroupID, prevArtifactID, itemsByVersionDir)
 
@@ -448,7 +444,7 @@ func (c *Crawler) sha1Urls(ctx context.Context, url string) ([]string, error) {
 }
 
 func (c *Crawler) fetchSHA1(ctx context.Context, itemName string) ([]byte, error) {
-	url := c.gcrRepoURL + itemName
+	url := c.gcrURL + "maven-central/" + itemName
 	resp, err := c.httpGet(ctx, url)
 	if err != nil {
 		return nil, xerrors.Errorf("http get error: %w", err)
