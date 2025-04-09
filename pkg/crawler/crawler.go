@@ -49,15 +49,19 @@ type Crawler struct {
 }
 
 type Option struct {
-	Limit    int64
-	MavenUrl string
-	GcsUrl   string
-	CacheDir string
+	Limit        int64
+	MavenUrl     string
+	GcsUrl       string
+	CacheDir     string
+	WithoutRetry bool
 }
 
 func NewCrawler(opt Option) (Crawler, error) {
 	client := retryablehttp.NewClient()
 	client.RetryMax = 10
+	if opt.WithoutRetry {
+		client.RetryMax = 0
+	}
 	client.Logger = slog.Default()
 	client.RetryWaitMin = 1 * time.Minute
 	client.RetryWaitMax = 5 * time.Minute
@@ -215,7 +219,7 @@ func (c *Crawler) rootDirs(ctx context.Context) ([]string, error) {
 }
 
 func (c *Crawler) crawlRootDir(ctx context.Context, rootDir string) error {
-	url := c.gcrURL + "storage/v1/b/maven-central/o/" // Add API endpoint
+	url := c.gcrURL + "storage/v1/b/maven-central/o/"
 	req, err := retryablehttp.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
 		return xerrors.Errorf("unable to create a HTTP request: %w", err)
@@ -253,18 +257,18 @@ func (c *Crawler) crawlRootDir(ctx context.Context, rootDir string) error {
 	return nil
 }
 
-func (c *Crawler) rootDirObjects(ctx context.Context, req *retryablehttp.Request) (gcsApiResponse, error) {
+func (c *Crawler) rootDirObjects(ctx context.Context, req *retryablehttp.Request) (GcsApiResponse, error) {
 	resp, err := c.httpGet(ctx, req.URL.String())
 	if err != nil {
-		return gcsApiResponse{}, xerrors.Errorf("http error (%s): %w", req.URL.String(), err)
+		return GcsApiResponse{}, xerrors.Errorf("http error (%s): %w", req.URL.String(), err)
 	}
 	defer resp.Body.Close()
 
-	r := gcsApiResponse{}
+	r := GcsApiResponse{}
 
 	err = json.NewDecoder(resp.Body).Decode(&r)
 	if err != nil {
-		return gcsApiResponse{}, xerrors.Errorf("unable to parse API response: %w", err)
+		return GcsApiResponse{}, xerrors.Errorf("unable to parse API response: %w", err)
 	}
 
 	return r, nil
