@@ -25,13 +25,6 @@ import (
 	_ "modernc.org/sqlite"
 )
 
-type response struct {
-	Items []item `json:"items"`
-}
-type item struct {
-	Name string `json:"name"`
-}
-
 func TestCrawl(t *testing.T) {
 	tests := []struct {
 		name              string
