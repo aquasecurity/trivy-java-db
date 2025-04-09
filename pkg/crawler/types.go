@@ -22,7 +22,7 @@ type Index struct {
 	ArchiveType types.ArchiveType
 }
 
-type gcsApiResponse struct {
+type GcsApiResponse struct {
 	NextPageToken string `json:"nextPageToken,omitempty"`
 	Items         []Item `json:"items,omitempty"`
 }
