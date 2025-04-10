@@ -27,20 +27,19 @@ import (
 
 func TestCrawl(t *testing.T) {
 	tests := []struct {
-		name              string
-		limit             int64
-		maxResults        int
-		fileNames         map[string]string
-		withDb            bool
-		mavenCentralError bool
-		gcsApiError       bool
-		goldenPath        string
-		filePath          string
-		wantErr           string
+		name        string
+		limit       int64
+		maxResults  int
+		fileNames   map[string]string
+		withDb      bool
+		gcsApiError bool
+		goldenPath  string
+		filePath    string
+		wantErr     string
 	}{
 		{
 			name:       "happy path",
-			limit:      2,
+			limit:      1,
 			maxResults: 3,
 			fileNames: map[string]string{
 				"maven2/abbot/abbot/0.12.3/abbot-0.12.3.jar.sha1":      "testdata/happy/abbot-0.12.3.jar.sha1",
@@ -55,7 +54,7 @@ func TestCrawl(t *testing.T) {
 		{
 			name:       "happy path with DB",
 			withDb:     true,
-			limit:      2,
+			limit:      1,
 			maxResults: 3,
 			fileNames: map[string]string{
 				"maven2/abbot/abbot/0.12.3/abbot-0.12.3.jar.sha1":      "testdata/happy/abbot-0.12.3.jar.sha1",
@@ -68,12 +67,6 @@ func TestCrawl(t *testing.T) {
 			filePath:   "indexes/abbot/abbot.json",
 		},
 		{
-			name:              "sad path. Maven central error",
-			limit:             2,
-			mavenCentralError: true,
-			wantErr:           "unable to get root dirs",
-		},
-		{
 			name:        "sad path. GCS API error",
 			limit:       2,
 			gcsApiError: true,
@@ -82,23 +75,13 @@ func TestCrawl(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			mts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				if tt.mavenCentralError {
-					w.WriteHeader(http.StatusInternalServerError)
-					return
-				}
-				http.ServeFile(w, r, "testdata/happy/index.html")
-				w.WriteHeader(http.StatusOK)
-				return
-			}))
-			defer mts.Close()
-
 			sha1List := lo.Keys(tt.fileNames)
 			slices.Sort(sha1List)
 
 			gts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				if strings.HasSuffix(r.URL.String(), ".jar.sha1") {
-					require.NoError(t, writeSha1(t, w, r, tt.fileNames))
+					err := writeSha1(t, w, r, tt.fileNames)
+					require.NoError(t, err)
 					return
 				}
 
@@ -106,7 +89,8 @@ func TestCrawl(t *testing.T) {
 					w.WriteHeader(http.StatusInternalServerError)
 					return
 				}
-				require.NoError(t, writeGCSResponse(t, w, r, sha1List, tt.maxResults))
+				err := writeGCSResponse(t, w, r, sha1List, tt.maxResults)
+				require.NoError(t, err)
 
 			}))
 			defer gts.Close()
@@ -123,7 +107,6 @@ func TestCrawl(t *testing.T) {
 			}
 
 			cl, err := crawler.NewCrawler(crawler.Option{
-				MavenUrl:     mts.URL + "/maven2/",
 				GcsUrl:       gts.URL + "/",
 				Limit:        tt.limit,
 				CacheDir:     tmpDir,
@@ -162,29 +145,30 @@ func writeSha1(t *testing.T, w http.ResponseWriter, r *http.Request, fileNames m
 
 func writeGCSResponse(t *testing.T, w http.ResponseWriter, r *http.Request, sha1Urls []string, maxResults int) error {
 	t.Helper()
-	var token int
+	resp := crawler.GcsApiResponse{}
 	q := r.URL.Query()
-	if qResult := q.Get("pageToken"); qResult != "" {
-		var err error
-		token, err = strconv.Atoi(qResult)
+
+	pageToken := q.Get("pageToken")
+	if pageToken == "" {
+		resp.NextPageToken = "0"
+	} else {
+		token, err := strconv.Atoi(pageToken)
 		if err != nil {
 			return err
 		}
-	}
 
-	resp := crawler.GcsApiResponse{}
+		for i := token * maxResults; i < token*maxResults+maxResults; i++ {
+			resp.Items = append(resp.Items, crawler.Item{
+				Name: sha1Urls[i],
+			})
 
-	for i := token * maxResults; i < token*maxResults+maxResults; i++ {
-		resp.Items = append(resp.Items, crawler.Item{
-			Name: sha1Urls[i],
-		})
-
-		if i == len(sha1Urls)-1 {
-			token = -1
+			if i == len(sha1Urls)-1 {
+				token = -1
+			}
 		}
-	}
-	if token != -1 {
-		resp.NextPageToken = strconv.Itoa(token + 1)
+		if token != -1 {
+			resp.NextPageToken = strconv.Itoa(token + 1)
+		}
 	}
 
 	jsonResp, err := json.Marshal(resp)
