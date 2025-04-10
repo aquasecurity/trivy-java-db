@@ -43,6 +43,7 @@ type Crawler struct {
 
 	wg              sync.WaitGroup
 	limit           *semaphore.Weighted
+	itemCh          chan string
 	errCh           chan error
 	wrongSHA1Values []string
 
@@ -109,10 +110,11 @@ func NewCrawler(opt Option) (Crawler, error) {
 	}
 
 	return Crawler{
-		dir:   indexDir,
-		http:  client,
-		dbc:   &dbc,
-		errCh: make(chan error),
+		dir:    indexDir,
+		http:   client,
+		dbc:    &dbc,
+		itemCh: make(chan string),
+		errCh:  make(chan error),
 
 		mavenURL: opt.MavenUrl,
 		gcrURL:   opt.GcsUrl,
@@ -125,60 +127,19 @@ func (c *Crawler) Crawl(ctx context.Context) error {
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 
-	// Get root directories from maven central to use working API prefixes.
-	rootDirs, err := c.rootDirs(ctx)
+	go func() {
+		defer close(c.itemCh)
+		err := c.crawlGCSItems(ctx)
+		if err != nil {
+			c.errCh <- err
+		}
+	}()
+
+	err := c.parseItems(ctx)
 	if err != nil {
-		return xerrors.Errorf("unable to get root dirs: %w", err)
+		return xerrors.Errorf("unable to parse API response: %w", err)
 	}
 
-	c.wg.Add(1)
-	crawlDone := make(chan struct{})
-
-	go func() {
-		c.wg.Wait()
-		close(c.errCh)
-		crawlDone <- struct{}{}
-	}()
-
-	// Check all root dirs
-	go func() {
-		for _, rootDir := range rootDirs {
-			if err = c.limit.Acquire(ctx, 1); err != nil {
-				c.errCh <- xerrors.Errorf("semaphore acquire error: %w", err)
-				return
-			}
-
-			go func(rootDir string) {
-				defer c.limit.Release(1)
-				defer c.wg.Done()
-				c.wg.Add(1)
-				if err = c.crawlRootDir(ctx, rootDir); err != nil {
-					select {
-					// Context can be canceled if we receive an error from another crawlRootDir function.
-					case <-ctx.Done():
-						return
-					case c.errCh <- err:
-						return
-					}
-				}
-			}(rootDir)
-		}
-
-		c.wg.Done() // Close first WG
-	}()
-
-loop:
-	for {
-		select {
-		// Wait for DB update to complete
-		case <-crawlDone:
-			break loop
-		case err := <-c.errCh:
-			cancel() // Stop all running crawlRootDir functions to avoid writing to closed c.urlCh.
-			return err
-
-		}
-	}
 	slog.Info("Crawl completed")
 	if len(c.wrongSHA1Values) > 0 {
 		for _, wrongSHA1 := range c.wrongSHA1Values {
@@ -188,38 +149,7 @@ loop:
 	return nil
 }
 
-// rootDirs returns root dirs from maven central.
-// It is required because GCS doesn't return artifacts for `maven2/` prefix.
-func (c *Crawler) rootDirs(ctx context.Context) ([]string, error) {
-	resp, err := c.httpGet(ctx, c.mavenURL)
-	if err != nil {
-		return nil, xerrors.Errorf("http get error: %w", err)
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		return nil, xerrors.Errorf("unable to get root URL: %s", resp.Status)
-	}
-
-	d, err := goquery.NewDocumentFromReader(resp.Body)
-	if err != nil {
-		return nil, xerrors.Errorf("can't create new goquery doc: %w", err)
-	}
-
-	var rootDirs []string
-	d.Find("a").Each(func(i int, selection *goquery.Selection) {
-		link := linkFromSelection(selection)
-		if link == "../" || !strings.HasSuffix(link, "/") {
-			// only `../` and dirs have `/` suffix. We don't need to check other files.
-			return
-		}
-		rootDirs = append(rootDirs, link)
-	})
-
-	return rootDirs, nil
-}
-
-func (c *Crawler) crawlRootDir(ctx context.Context, rootDir string) error {
+func (c *Crawler) crawlGCSItems(ctx context.Context) error {
 	url := c.gcrURL + "storage/v1/b/maven-central/o/"
 	req, err := retryablehttp.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
@@ -227,22 +157,21 @@ func (c *Crawler) crawlRootDir(ctx context.Context, rootDir string) error {
 	}
 
 	query := req.URL.Query()
-	query.Set("prefix", "maven2/"+rootDir)
+	query.Set("prefix", "maven2/")
 	query.Set("matchGlob", "**/*.jar.sha1")
 	query.Set("maxResults", "5000")
 	req.URL.RawQuery = query.Encode()
 
-	var items []string
 	for {
-		r, err := c.rootDirObjects(ctx, req)
+		r, err := c.fetchItems(ctx, req)
 		if err != nil {
-			return xerrors.Errorf("unable to get root dir objects: %w", err)
+			return xerrors.Errorf("unable to get items: %w", err)
 		}
 		query.Set("pageToken", r.NextPageToken)
 		req.URL.RawQuery = query.Encode()
-		items = append(items, lo.Map(r.Items, func(item Item, _ int) string {
-			return item.Name
-		})...)
+		for _, item := range r.Items {
+			c.itemCh <- item.Name
+		}
 
 		if r.NextPageToken == "" {
 			break
@@ -250,15 +179,10 @@ func (c *Crawler) crawlRootDir(ctx context.Context, rootDir string) error {
 
 	}
 
-	err = c.parseItems(ctx, items)
-	if err != nil {
-		return xerrors.Errorf("unable to parse API response: %w", err)
-	}
-
 	return nil
 }
 
-func (c *Crawler) rootDirObjects(ctx context.Context, req *retryablehttp.Request) (GcsApiResponse, error) {
+func (c *Crawler) fetchItems(ctx context.Context, req *retryablehttp.Request) (GcsApiResponse, error) {
 	resp, err := c.httpGet(ctx, req.URL.String())
 	if err != nil {
 		return GcsApiResponse{}, xerrors.Errorf("http error (%s): %w", req.URL.String(), err)
@@ -275,10 +199,10 @@ func (c *Crawler) rootDirObjects(ctx context.Context, req *retryablehttp.Request
 	return r, nil
 }
 
-func (c *Crawler) parseItems(ctx context.Context, items []string) error {
+func (c *Crawler) parseItems(ctx context.Context) error {
 	var prevGroupID, prevArtifactID string
 	itemsByVersionDir := map[string][]string{}
-	for _, itemName := range items {
+	for itemName := range c.itemCh {
 		// Don't include sources, test, javadocs, scaladoc files
 		if strings.HasSuffix(itemName, "sources.jar.sha1") ||
 			strings.HasSuffix(itemName, "test.jar.sha1") || strings.HasSuffix(itemName, "tests.jar.sha1") ||
@@ -312,6 +236,10 @@ func (c *Crawler) parseItems(ctx context.Context, items []string) error {
 		itemsByVersionDir[versionDir] = append(itemsByVersionDir[versionDir], itemName)
 	}
 
+	// If context was canceled - we don't need to save last artifact
+	if ctx.Err() != nil {
+		return nil
+	}
 	// Save last artifact
 	err := c.crawlSHA1(ctx, prevGroupID, prevArtifactID, itemsByVersionDir)
 	if err != nil {
