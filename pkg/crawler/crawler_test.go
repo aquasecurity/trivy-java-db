@@ -3,17 +3,22 @@ package crawler_test
 import (
 	"context"
 	"encoding/hex"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"slices"
+	"strconv"
 	"strings"
 	"testing"
 
 	"github.com/aquasecurity/trivy-java-db/pkg/dbtest"
 	"github.com/aquasecurity/trivy-java-db/pkg/types"
+	"github.com/samber/lo"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"golang.org/x/xerrors"
 
 	"github.com/aquasecurity/trivy-java-db/pkg/crawler"
 
@@ -22,87 +27,73 @@ import (
 
 func TestCrawl(t *testing.T) {
 	tests := []struct {
-		name       string
-		limit      int64
-		fileNames  map[string]string
-		withDb     bool
-		goldenPath string
-		filePath   string
-		wantErr    string
+		name        string
+		limit       int64
+		maxResults  int
+		fileNames   map[string]string
+		withDb      bool
+		gcsApiError bool
+		goldenPath  string
+		filePath    string
+		wantErr     string
 	}{
 		{
-			name:  "happy path",
-			limit: 1,
+			name:       "happy path",
+			limit:      1,
+			maxResults: 3,
 			fileNames: map[string]string{
-				"/maven2/":                                              "testdata/happy/index.html",
-				"/maven2/abbot/":                                        "testdata/happy/abbot.html",
-				"/maven2/abbot/abbot/":                                  "testdata/happy/abbot_abbot.html",
-				"/maven2/abbot/abbot/maven-metadata.xml":                "testdata/happy/maven-metadata.xml",
-				"/maven2/abbot/abbot/0.12.3/":                           "testdata/happy/abbot_abbot_0.12.3.html",
-				"/maven2/abbot/abbot/0.12.3/abbot-0.12.3.jar.sha1":      "testdata/happy/abbot-0.12.3.jar.sha1",
-				"/maven2/abbot/abbot/0.13.0/":                           "testdata/happy/abbot_abbot_0.13.0.html",
-				"/maven2/abbot/abbot/0.13.0/abbot-0.13.0.jar.sha1":      "testdata/happy/abbot-0.13.0.jar.sha1",
-				"/maven2/abbot/abbot/0.13.0/abbot-0.13.0-copy.jar.sha1": "testdata/happy/abbot-0.13.0-copy.jar.sha1",
-				"/maven2/abbot/abbot/1.4.0/":                            "testdata/happy/abbot_abbot_1.4.0.html",
-				"/maven2/abbot/abbot/1.4.0/abbot-1.4.0.jar.sha1":        "testdata/happy/abbot-1.4.0.jar.sha1",
-				"/maven2/abbot/abbot/1.4.0/abbot-1.4.0-lite.jar.sha1":   "testdata/happy/abbot-1.4.0-lite.jar.sha1",
+				"maven2/abbot/abbot/0.12.3/abbot-0.12.3.jar.sha1":      "testdata/happy/abbot-0.12.3.jar.sha1",
+				"maven2/abbot/abbot/0.13.0/abbot-0.13.0.jar.sha1":      "testdata/happy/abbot-0.13.0.jar.sha1",
+				"maven2/abbot/abbot/0.13.0/abbot-0.13.0-copy.jar.sha1": "testdata/happy/abbot-0.13.0-copy.jar.sha1",
+				"maven2/abbot/abbot/1.4.0/abbot-1.4.0.jar.sha1":        "testdata/happy/abbot-1.4.0.jar.sha1",
+				"maven2/abbot/abbot/1.4.0/abbot-1.4.0-lite.jar.sha1":   "testdata/happy/abbot-1.4.0-lite.jar.sha1",
 			},
 			goldenPath: "testdata/happy/abbot.json.golden",
 			filePath:   "indexes/abbot/abbot.json",
 		},
 		{
-			name:   "happy path with DB",
-			withDb: true,
-			limit:  1,
+			name:       "happy path with DB",
+			withDb:     true,
+			limit:      1,
+			maxResults: 3,
 			fileNames: map[string]string{
-				"/maven2/":                                              "testdata/happy/index.html",
-				"/maven2/abbot/":                                        "testdata/happy/abbot.html",
-				"/maven2/abbot/abbot/":                                  "testdata/happy/abbot_abbot.html",
-				"/maven2/abbot/abbot/maven-metadata.xml":                "testdata/happy/maven-metadata.xml",
-				"/maven2/abbot/abbot/0.12.3/":                           "testdata/happy/abbot_abbot_0.12.3.html",
-				"/maven2/abbot/abbot/0.12.3/abbot-0.12.3.jar.sha1":      "testdata/happy/abbot-0.12.3.jar.sha1",
-				"/maven2/abbot/abbot/0.13.0/":                           "testdata/happy/abbot_abbot_0.13.0.html",
-				"/maven2/abbot/abbot/0.13.0/abbot-0.13.0.jar.sha1":      "testdata/happy/abbot-0.13.0.jar.sha1",
-				"/maven2/abbot/abbot/0.13.0/abbot-0.13.0-copy.jar.sha1": "testdata/happy/abbot-0.13.0-copy.jar.sha1",
-				"/maven2/abbot/abbot/1.4.0/":                            "testdata/happy/abbot_abbot_1.4.0.html",
-				"/maven2/abbot/abbot/1.4.0/abbot-1.4.0.jar.sha1":        "testdata/happy/abbot-1.4.0.jar.sha1",
-				"/maven2/abbot/abbot/1.4.0/abbot-1.4.0-lite.jar.sha1":   "testdata/happy/abbot-1.4.0-lite.jar.sha1",
+				"maven2/abbot/abbot/0.12.3/abbot-0.12.3.jar.sha1":      "testdata/happy/abbot-0.12.3.jar.sha1",
+				"maven2/abbot/abbot/0.13.0/abbot-0.13.0.jar.sha1":      "testdata/happy/abbot-0.13.0.jar.sha1",
+				"maven2/abbot/abbot/0.13.0/abbot-0.13.0-copy.jar.sha1": "testdata/happy/abbot-0.13.0-copy.jar.sha1",
+				"maven2/abbot/abbot/1.4.0/abbot-1.4.0.jar.sha1":        "testdata/happy/abbot-1.4.0.jar.sha1",
+				"maven2/abbot/abbot/1.4.0/abbot-1.4.0-lite.jar.sha1":   "testdata/happy/abbot-1.4.0-lite.jar.sha1",
 			},
 			goldenPath: "testdata/happy/abbot-with-db.json.golden",
 			filePath:   "indexes/abbot/abbot.json",
 		},
 		{
-			name:  "sad path",
-			limit: 2,
-			fileNames: map[string]string{
-				// index.html file for this test contains many links to avoid case
-				// when we finish crawl and get error in one time.
-				// We will get a `panic` because we will try to close `urlCh` in 2 places (after the wait group and after the error)
-				// In real case it is impossible
-				"/maven2/":                               "testdata/sad/index.html",
-				"/maven2/abbot/":                         "testdata/sad/abbot.html",
-				"/maven2/abbot/abbot/":                   "testdata/sad/abbot_abbot.html",
-				"/maven2/abbot/abbot/maven-metadata.xml": "testdata/sad/maven-metadata.xml",
-				"/maven2/HTTPClient/":                    "testdata/sad/httpclient.html",
-				"/maven2/HTTPClient/HTTPClient/":         "testdata/sad/httpclient_httpclient.html",
-				"/maven2/HTTPClient/maven-metadata.xml":  "testdata/sad/maven-metadata.xml",
-			},
-			wantErr: "decode error:",
+			name:        "sad path. GCS API error",
+			limit:       2,
+			gcsApiError: true,
+			wantErr:     "HTTP request failed after retries",
 		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				fileName, ok := tt.fileNames[r.URL.Path]
-				if !ok {
-					http.NotFound(w, r)
+			sha1List := lo.Keys(tt.fileNames)
+			slices.Sort(sha1List)
+
+			gts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if strings.HasSuffix(r.URL.String(), ".jar.sha1") {
+					err := writeSha1(t, w, r, tt.fileNames)
+					require.NoError(t, err)
 					return
 				}
-				http.ServeFile(w, r, fileName)
-				w.WriteHeader(http.StatusOK)
-				return
+
+				if tt.gcsApiError {
+					w.WriteHeader(http.StatusInternalServerError)
+					return
+				}
+				err := writeGCSResponse(t, w, r, sha1List, tt.maxResults)
+				require.NoError(t, err)
+
 			}))
-			defer ts.Close()
+			defer gts.Close()
 
 			tmpDir := t.TempDir()
 			if tt.withDb {
@@ -116,9 +107,10 @@ func TestCrawl(t *testing.T) {
 			}
 
 			cl, err := crawler.NewCrawler(crawler.Option{
-				RootUrl:  ts.URL + "/maven2/",
-				Limit:    tt.limit,
-				CacheDir: tmpDir,
+				GcsUrl:       gts.URL + "/",
+				Limit:        tt.limit,
+				CacheDir:     tmpDir,
+				WithoutRetry: true,
 			})
 			require.NoError(t, err)
 
@@ -137,6 +129,60 @@ func TestCrawl(t *testing.T) {
 			assert.JSONEq(t, string(want), string(got))
 		})
 	}
+}
+
+func writeSha1(t *testing.T, w http.ResponseWriter, r *http.Request, fileNames map[string]string) error {
+	t.Helper()
+	url := strings.TrimPrefix(r.URL.String(), "/maven-central/")
+	testFilePath, ok := fileNames[url]
+	if !ok {
+		return xerrors.Errorf("unable to find file: %s", r.URL.Path)
+	}
+	http.ServeFile(w, r, testFilePath)
+	w.WriteHeader(http.StatusOK)
+	return nil
+}
+
+func writeGCSResponse(t *testing.T, w http.ResponseWriter, r *http.Request, sha1Urls []string, maxResults int) error {
+	t.Helper()
+	resp := crawler.GcsApiResponse{}
+	q := r.URL.Query()
+
+	pageToken := q.Get("pageToken")
+	if pageToken == "" {
+		resp.NextPageToken = "0"
+	} else {
+		token, err := strconv.Atoi(pageToken)
+		if err != nil {
+			return err
+		}
+
+		for i := token * maxResults; i < token*maxResults+maxResults; i++ {
+			resp.Items = append(resp.Items, crawler.Item{
+				Name: sha1Urls[i],
+			})
+
+			if i == len(sha1Urls)-1 {
+				token = -1
+			}
+		}
+		if token != -1 {
+			resp.NextPageToken = strconv.Itoa(token + 1)
+		}
+	}
+
+	jsonResp, err := json.Marshal(resp)
+	if err != nil {
+		return err
+	}
+
+	w.WriteHeader(http.StatusOK)
+	_, err = w.Write(jsonResp)
+	if err != nil {
+		return err
+	}
+
+	return nil
 }
 
 var (

@@ -21,3 +21,12 @@ type Index struct {
 	Versions    []types.Version
 	ArchiveType types.ArchiveType
 }
+
+type GcsApiResponse struct {
+	NextPageToken string `json:"nextPageToken,omitempty"`
+	Items         []Item `json:"items,omitempty"`
+}
+
+type Item struct {
+	Name string `json:"name"`
+}
