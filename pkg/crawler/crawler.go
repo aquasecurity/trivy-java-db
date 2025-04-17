@@ -9,21 +9,16 @@ import (
 	"log/slog"
 	"math/rand"
 	"net/http"
-	"os"
 	"path/filepath"
-	"slices"
 	"strings"
-	"sync"
-	"sync/atomic"
 	"time"
 
 	"github.com/hashicorp/go-retryablehttp"
 	"github.com/samber/lo"
-	"golang.org/x/sync/semaphore"
+	"golang.org/x/sync/errgroup"
 	"golang.org/x/xerrors"
 
 	"github.com/aquasecurity/trivy-java-db/pkg/fileutil"
-	"github.com/aquasecurity/trivy-java-db/pkg/types"
 )
 
 const (
@@ -36,16 +31,12 @@ type Crawler struct {
 
 	gcrURL string
 
-	wg              sync.WaitGroup
-	limit           *semaphore.Weighted
-	itemCh          chan string
+	limit           int
 	wrongSHA1Values []string
-
-	count int64
 }
 
 type Option struct {
-	Limit        int64
+	Limit        int
 	GcsURL       string
 	CacheDir     string
 	IndexDir     string
@@ -88,56 +79,38 @@ func NewCrawler(opt Option) (Crawler, error) {
 	slog.Info("Index dir", slog.String("path", opt.IndexDir))
 
 	return Crawler{
-		dir:    opt.IndexDir,
-		http:   client,
-		itemCh: make(chan string),
+		dir:  opt.IndexDir,
+		http: client,
 
 		gcrURL: opt.GcsURL,
-		limit:  semaphore.NewWeighted(opt.Limit),
+		limit:  opt.Limit,
 	}, nil
 }
 
 func (c *Crawler) Crawl(ctx context.Context) error {
 	slog.Info("Crawl GCS and save indexes")
-	ctx, cancel := context.WithCancel(ctx)
-	defer cancel()
+	g, ctx := errgroup.WithContext(ctx)
+	g.SetLimit(c.limit)
 
-	crawlDone := make(chan struct{})
-	errCh := make(chan error)
-	c.wg.Add(1)
+	// Get all item names suffixing with .jar.sha1 from GCS
+	itemCh := make(chan string)
+	g.Go(func() error {
+		defer close(itemCh)
+		return c.crawlGCSItems(ctx, itemCh)
+	})
 
-	go func() {
-		c.wg.Wait()
-		crawlDone <- struct{}{}
-	}()
+	// Crawl each item and save the index
+	for item := range itemCh {
+		g.Go(func() error {
+			return c.crawlSHA1(ctx, item)
+		})
+	}
 
-	go func() {
-		defer close(c.itemCh)
-		defer c.wg.Done()
-		err := c.crawlGCSItems(ctx)
-		if err != nil {
-			errCh <- err
-		}
-	}()
-
-	go func() {
-		c.wg.Add(1)
-		defer c.wg.Done()
-
-		err := c.parseItems(ctx)
-		if err != nil {
-			errCh <- err
-		}
-	}()
-
-loop:
-	for {
-		select {
-		case <-crawlDone:
-			break loop
-		case err := <-errCh:
-			return err
-		}
+	// Check whether any of the goroutines failed. Since g is accumulating the
+	// errors, we don't need to send them (or check for them) in the individual
+	// results sent on the channel.
+	if err := g.Wait(); err != nil {
+		return err
 	}
 
 	slog.Info("Crawl completed")
@@ -149,7 +122,7 @@ loop:
 	return nil
 }
 
-func (c *Crawler) crawlGCSItems(ctx context.Context) error {
+func (c *Crawler) crawlGCSItems(ctx context.Context, itemCh chan string) error {
 	url := c.gcrURL + "storage/v1/b/maven-central/o/"
 	req, err := retryablehttp.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
@@ -162,20 +135,30 @@ func (c *Crawler) crawlGCSItems(ctx context.Context) error {
 	query.Set("maxResults", "5000")
 	req.URL.RawQuery = query.Encode()
 
+	var count int
 	for {
 		r, err := c.fetchItems(ctx, req)
 		if err != nil {
 			return xerrors.Errorf("unable to get items: %w", err)
 		}
-		query.Set("pageToken", r.NextPageToken)
-		req.URL.RawQuery = query.Encode()
 		for _, item := range r.Items {
-			c.itemCh <- item.Name
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			case itemCh <- item.Name:
+			}
+
+			count++
+			if count%100000 == 0 {
+				slog.Info(fmt.Sprintf("Crawled %d artifacts", count))
+			}
 		}
 
 		if r.NextPageToken == "" {
 			break
 		}
+		query.Set("pageToken", r.NextPageToken)
+		req.URL.RawQuery = query.Encode()
 
 	}
 
@@ -199,136 +182,44 @@ func (c *Crawler) fetchItems(ctx context.Context, req *retryablehttp.Request) (G
 	return r, nil
 }
 
-func (c *Crawler) parseItems(ctx context.Context) error {
-	var prevGroupID, prevArtifactID string
-	itemsByVersionDir := map[string][]string{}
-	for itemName := range c.itemCh {
-		// Don't include sources, test, javadocs, scaladoc files
-		if strings.HasSuffix(itemName, "sources.jar.sha1") ||
-			strings.HasSuffix(itemName, "test.jar.sha1") || strings.HasSuffix(itemName, "tests.jar.sha1") ||
-			strings.HasSuffix(itemName, "javadoc.jar.sha1") || strings.HasSuffix(itemName, "scaladoc.jar.sha1") {
-			continue
-		}
-
-		groupID, artifactID, versionDir, _ := parseItemName(itemName)
-		if prevGroupID != groupID || prevArtifactID != artifactID {
-			if err := c.limit.Acquire(ctx, 1); err != nil {
-				return xerrors.Errorf("semaphore acquire error: %w", err)
-			}
-			go func(ctx context.Context, groupID, artifactID string, items map[string][]string) {
-				defer c.limit.Release(1)
-				defer c.wg.Done()
-				c.wg.Add(1)
-				err := c.crawlSHA1(ctx, groupID, artifactID, items)
-				if err != nil {
-					slog.Warn("crawlSHA1 failed", slog.String("error", err.Error()))
-					return
-				}
-			}(ctx, prevGroupID, prevArtifactID, itemsByVersionDir)
-
-			// Index saved in crawlSHA1
-			// So we need to clear previous GAV
-			prevGroupID = groupID
-			prevArtifactID = artifactID
-			itemsByVersionDir = map[string][]string{}
-		}
-
-		itemsByVersionDir[versionDir] = append(itemsByVersionDir[versionDir], itemName)
+func (c *Crawler) crawlSHA1(ctx context.Context, item string) error {
+	// Don't include sources, test, javadocs, scaladoc files
+	if strings.HasSuffix(item, "sources.jar.sha1") ||
+		strings.HasSuffix(item, "test.jar.sha1") || strings.HasSuffix(item, "tests.jar.sha1") ||
+		strings.HasSuffix(item, "javadoc.jar.sha1") || strings.HasSuffix(item, "scaladoc.jar.sha1") {
+		return nil
 	}
 
-	// Save last artifact
-	err := c.crawlSHA1(ctx, prevGroupID, prevArtifactID, itemsByVersionDir)
-	if err != nil {
-		return xerrors.Errorf("unable to crawl SHA1: %w", err)
-	}
-
-	return nil
-}
-
-func (c *Crawler) crawlSHA1(ctx context.Context, groupID, artifactID string, dirs map[string][]string) error {
+	groupID, artifactID, versionDir, version := parseItemName(item)
 	if groupID == "" || artifactID == "" {
 		return nil
 	}
 
-	atomic.AddInt64(&c.count, 1)
-	if c.count%1000 == 0 {
-		slog.Info(fmt.Sprintf("Crawled %d artifacts", atomic.LoadInt64(&c.count)))
-	}
-
 	filePathElements := []string{c.dir}
-	filePathElements = append(filePathElements, strings.Split(groupID, ".")...) // Convert groupID to directory names
-	filePathElements = append(filePathElements, artifactID, fmt.Sprintf("%s.json", artifactID))
+	filePathElements = append(filePathElements, strings.Split(groupID, ".")...) // Convert group-id to directory names
+	filePathElements = append(filePathElements, artifactID, versionDir, fmt.Sprintf("%s.json", version))
 	filePath := filepath.Join(filePathElements...)
 
-	savedVersions, err := c.savedVersions(filePath)
-	if err != nil {
-		return xerrors.Errorf("unable to get saved versions: %w", err)
-	}
-
-	var newVersions []types.Version
-	// Check each version dir to find links to `*.jar.sha1` files.
-	for _, itemNames := range dirs {
-		for _, itemName := range itemNames {
-			_, _, _, ver := parseItemName(itemName)
-			if lo.ContainsBy(savedVersions, func(v types.Version) bool {
-				return v.Version == ver
-			}) {
-				continue
-			}
-
-			sha1, err := c.fetchSHA1(ctx, itemName)
-			if err != nil {
-				return xerrors.Errorf("unable to fetch sha1: %s", err)
-			}
-
-			// Save sha1 for the file where the version is equal to the version from the directory name in order to remove duplicates later
-			// Avoid overwriting dirVersion when inserting versions into the database (sha1 is uniq blob)
-			// e.g. `cudf-0.14-cuda10-1.jar.sha1` should not overwrite `cudf-0.14.jar.sha1`
-			// https://repo.maven.apache.org/maven2/ai/rapids/cudf/0.14/
-			newVersions = append(newVersions, types.Version{
-				Version: ver,
-				SHA1:    sha1,
-			})
-		}
-	}
-
-	if len(newVersions) == 0 {
+	// If the file already exists, skip the crawl
+	if fileutil.Exists(filePath) {
 		return nil
 	}
 
-	slog.Info("Saving newly found versions", slog.Int("count", len(newVersions)), slog.String("groupID", groupID), slog.String("artifactId", artifactID))
-	versions := slices.Concat(savedVersions, newVersions)
-	slices.SortFunc(versions, func(a, b types.Version) int {
-		return strings.Compare(a.Version, b.Version)
-	})
+	sha1, err := c.fetchSHA1(ctx, item)
+	if err != nil {
+		return xerrors.Errorf("unable to fetch sha1: %s", err)
+	} else if sha1 == "" {
+		return nil
+	}
 
-	index := &Index{
-		Versions:  versions,
-		Packaging: types.JarType,
+	index := Index{
+		SHA1: sha1,
+		// TODO: Add license
 	}
 	if err := fileutil.WriteJSON(filePath, index); err != nil {
 		return xerrors.Errorf("json write error: %w", err)
 	}
 	return nil
-}
-
-func (c *Crawler) savedVersions(filePath string) ([]types.Version, error) {
-	if !fileutil.Exists(filePath) {
-		return nil, nil
-	}
-
-	f, err := os.Open(filePath)
-	if err != nil {
-		return nil, xerrors.Errorf("unable to open file: %w", err)
-	}
-	defer f.Close()
-
-	var index Index
-	if err := json.NewDecoder(f).Decode(&index); err != nil {
-		return nil, xerrors.Errorf("unable to read json: %w", err)
-	}
-
-	return index.Versions, nil
 }
 
 func (c *Crawler) fetchSHA1(ctx context.Context, itemName string) (string, error) {

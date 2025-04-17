@@ -1,7 +1,5 @@
 package crawler
 
-import "github.com/aquasecurity/trivy-java-db/pkg/types"
-
 type Metadata struct {
 	GroupID    string     `xml:"groupId"`
 	ArtifactID string     `xml:"artifactId"`
@@ -15,11 +13,6 @@ type Versioning struct {
 	LastUpdated string   `xml:"lastUpdated"`
 }
 
-type Index struct {
-	Versions  []types.Version   `json:"vs"`
-	Packaging types.ArchiveType `json:"p"`
-}
-
 type GcsApiResponse struct {
 	NextPageToken string `json:"nextPageToken,omitempty"`
 	Items         []Item `json:"items,omitempty"`
@@ -27,4 +20,8 @@ type GcsApiResponse struct {
 
 type Item struct {
 	Name string `json:"name"`
+}
+
+type Index struct {
+	SHA1 string `json:"1"`
 }

@@ -58,7 +58,7 @@ func Count(root string) (int, error) {
 	return count, nil
 }
 
-func WriteJSON(filePath string, index interface{}) error {
+func WriteJSON(filePath string, index any) error {
 	if err := os.MkdirAll(filepath.Dir(filePath), os.ModePerm); err != nil {
 		return xerrors.Errorf("unable to create a directory: %w", err)
 	}

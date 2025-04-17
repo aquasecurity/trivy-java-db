@@ -1,6 +1,8 @@
 module github.com/aquasecurity/trivy-java-db
 
-go 1.22.7
+go 1.23.0
+
+toolchain go1.24.2
 
 require (
 	github.com/PuerkitoBio/goquery v1.5.1
@@ -9,7 +11,7 @@ require (
 	github.com/samber/lo v1.39.0
 	github.com/spf13/cobra v1.6.1
 	github.com/stretchr/testify v1.8.1
-	golang.org/x/sync v0.0.0-20210220032951-036812b2e83c
+	golang.org/x/sync v0.13.0
 	golang.org/x/xerrors v0.0.0-20220907171357-04be3eba64a2
 	k8s.io/utils v0.0.0-20230115233650-391b47cb4029
 	modernc.org/sqlite v1.20.3

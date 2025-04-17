@@ -17,8 +17,3 @@ type Index struct {
 	SHA1        []byte
 	ArchiveType ArchiveType
 }
-
-type Version struct {
-	Version string `json:"v"`
-	SHA1    string `json:"1"`
-}

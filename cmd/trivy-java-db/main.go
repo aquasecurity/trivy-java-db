@@ -70,7 +70,7 @@ func init() {
 
 func crawl(ctx context.Context) error {
 	c, err := crawler.NewCrawler(crawler.Option{
-		Limit:    int64(limit),
+		Limit:    limit,
 		CacheDir: cacheDir,
 		IndexDir: filepath.Join(indexDir, "central"),
 	})

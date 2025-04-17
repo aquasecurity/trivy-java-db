@@ -46,8 +46,8 @@ func (b *Builder) Build(indexDir string) error {
 
 	var indexes []types.Index
 	if err := fileutil.Walk(indexDir, func(r io.Reader, path string) error {
-		index := &crawler.Index{}
-		if err := json.NewDecoder(r).Decode(index); err != nil {
+		var index crawler.Index
+		if err := json.NewDecoder(r).Decode(&index); err != nil {
 			return xerrors.Errorf("failed to decode index: %w", err)
 		}
 
@@ -56,25 +56,26 @@ func (b *Builder) Build(indexDir string) error {
 		if err != nil {
 			return xerrors.Errorf("failed to get relative path: %w", err)
 		}
-		dir := filepath.Dir(rel)
-		groupID, artifactID := filepath.Split(dir)
+		dir, base := filepath.Split(rel)
+		version := strings.TrimSuffix(base, ".json")
+		ga, _ := filepath.Split(dir)
+		groupID, artifactID := filepath.Split(ga)
 		groupID = strings.ReplaceAll(filepath.Clean(groupID), string(filepath.Separator), ".")
 
-		for _, ver := range index.Versions {
-			sha1, err := hex.DecodeString(ver.SHA1)
-			if err != nil {
-				slog.Error("failed to decode SHA1", slog.Any("error", err), slog.String("sha1", ver.SHA1))
-				continue // Should never happen as we validate SHA1 in crawler
-			}
-
-			indexes = append(indexes, types.Index{
-				GroupID:     groupID,
-				ArtifactID:  artifactID,
-				Version:     ver.Version,
-				SHA1:        sha1,
-				ArchiveType: index.Packaging,
-			})
+		sha1, err := hex.DecodeString(index.SHA1)
+		if err != nil {
+			slog.Error("failed to decode SHA1", slog.Any("error", err), slog.String("sha1", index.SHA1))
+			return xerrors.Errorf("failed to decode SHA1: %w", err) // Should never happen as we validate SHA1 in crawler
 		}
+
+		indexes = append(indexes, types.Index{
+			GroupID:     groupID,
+			ArtifactID:  artifactID,
+			Version:     version,
+			SHA1:        sha1,
+			ArchiveType: types.JarType, // Always JAR for now
+		})
+
 		bar.Increment()
 
 		if len(indexes) > 1000 {
