@@ -1,7 +1,6 @@
 package crawler
 
 import (
-	"bytes"
 	"context"
 	"encoding/hex"
 	"encoding/json"
@@ -48,8 +47,9 @@ type Crawler struct {
 
 type Option struct {
 	Limit        int64
-	GcsUrl       string
+	GcsURL       string
 	CacheDir     string
+	IndexDir     string
 	WithoutRetry bool
 }
 
@@ -82,12 +82,11 @@ func NewCrawler(opt Option) (Crawler, error) {
 		return resp, xerrors.Errorf("HTTP request failed after retries: %w", err)
 	}
 
-	if opt.GcsUrl == "" {
-		opt.GcsUrl = gcsURL
+	if opt.GcsURL == "" {
+		opt.GcsURL = gcsURL
 	}
 
-	indexDir := filepath.Join(opt.CacheDir, "indexes")
-	slog.Info("Index dir", slog.String("path", indexDir))
+	slog.Info("Index dir", slog.String("path", opt.IndexDir))
 
 	var dbc db.DB
 	dbDir := db.Dir(opt.CacheDir)
@@ -101,12 +100,12 @@ func NewCrawler(opt Option) (Crawler, error) {
 	}
 
 	return Crawler{
-		dir:    indexDir,
+		dir:    opt.IndexDir,
 		http:   client,
 		dbc:    &dbc,
 		itemCh: make(chan string),
 
-		gcrURL: opt.GcsUrl,
+		gcrURL: opt.GcsURL,
 		limit:  semaphore.NewWeighted(opt.Limit),
 	}, nil
 }
@@ -270,56 +269,24 @@ func (c *Crawler) crawlSHA1(ctx context.Context, groupID, artifactID string, dir
 	}
 
 	var foundVersions []types.Version
-	// Get versions from the DB (if exists) to reduce the number of requests to the server
-	savedVersion, err := c.versionsFromDB(groupID, artifactID)
-	if err != nil {
-		return xerrors.Errorf("unable to get list of versions from DB: %w", err)
-	}
 	// Check each version dir to find links to `*.jar.sha1` files.
-	for dirVersion, itemNames := range dirs {
-		var dirVersionSha1 []byte
-		var versions []types.Version
-
+	for _, itemNames := range dirs {
 		for _, itemName := range itemNames {
 			_, _, _, ver := parseItemName(itemName)
-			sha1, ok := savedVersion[ver]
-			if !ok {
-				sha1, err = c.fetchSHA1(ctx, itemName)
-				if err != nil {
-					return xerrors.Errorf("unable to fetch sha1: %s", err)
-				}
+			sha1, err := c.fetchSHA1(ctx, itemName)
+			if err != nil {
+				return xerrors.Errorf("unable to fetch sha1: %s", err)
 			}
+
 			// Save sha1 for the file where the version is equal to the version from the directory name in order to remove duplicates later
 			// Avoid overwriting dirVersion when inserting versions into the database (sha1 is uniq blob)
 			// e.g. `cudf-0.14-cuda10-1.jar.sha1` should not overwrite `cudf-0.14.jar.sha1`
 			// https://repo.maven.apache.org/maven2/ai/rapids/cudf/0.14/
-			if ver == dirVersion {
-				dirVersionSha1 = sha1
-			} else {
-				versions = append(versions, types.Version{
-					Version: ver,
-					SHA1:    sha1,
-				})
-			}
-		}
-		// Remove duplicates of dirVersionSha1
-		versions = lo.Filter(versions, func(v types.Version, _ int) bool {
-			return !bytes.Equal(v.SHA1, dirVersionSha1)
-		})
-
-		if dirVersionSha1 != nil {
-			versions = append(versions, types.Version{
-				Version: dirVersion,
-				SHA1:    dirVersionSha1,
+			foundVersions = append(foundVersions, types.Version{
+				Version: ver,
+				SHA1:    sha1,
 			})
 		}
-
-		versions = lo.Filter(versions, func(v types.Version, _ int) bool {
-			_, ok := savedVersion[v.Version]
-			return !ok
-		})
-
-		foundVersions = append(foundVersions, versions...)
 	}
 
 	if len(foundVersions) == 0 {
@@ -336,18 +303,18 @@ func (c *Crawler) crawlSHA1(ctx context.Context, groupID, artifactID string, dir
 	}
 	filePath := []string{c.dir}
 	filePath = append(filePath, strings.Split(groupID, ".")...) // Convert groupID to directory names
-	filePath = append(filePath, fmt.Sprintf("%s.json", artifactID))
-	if err = fileutil.WriteJSON(filepath.Join(filePath...), index); err != nil {
+	filePath = append(filePath, artifactID, fmt.Sprintf("%s.json", artifactID))
+	if err := fileutil.WriteJSON(filepath.Join(filePath...), index); err != nil {
 		return xerrors.Errorf("json write error: %w", err)
 	}
 	return nil
 }
 
-func (c *Crawler) fetchSHA1(ctx context.Context, itemName string) ([]byte, error) {
+func (c *Crawler) fetchSHA1(ctx context.Context, itemName string) (string, error) {
 	url := c.gcrURL + "maven-central/" + itemName
 	resp, err := c.httpGet(ctx, url)
 	if err != nil {
-		return nil, xerrors.Errorf("http get error: %w", err)
+		return "", xerrors.Errorf("http get error: %w", err)
 	}
 	defer func() { _ = resp.Body.Close() }()
 
@@ -355,35 +322,36 @@ func (c *Crawler) fetchSHA1(ctx context.Context, itemName string) ([]byte, error
 	// But file doesn't exist
 	// e.g. https://repo.maven.apache.org/maven2/com/adobe/aem/uber-jar/6.4.8.2/uber-jar-6.4.8.2-sources.jar.sha1
 	if resp.StatusCode == http.StatusNotFound {
-		return nil, nil // TODO add special error for this
+		return "", nil // TODO add special error for this
 	}
 
-	sha1, err := io.ReadAll(resp.Body)
+	data, err := io.ReadAll(resp.Body)
 	if err != nil {
-		return nil, xerrors.Errorf("can't read sha1 %s: %w", url, err)
+		return "", xerrors.Errorf("can't read sha1 %s: %w", url, err)
 	}
 
 	// there are empty xxx.jar.sha1 files. Skip them.
 	// e.g. https://repo.maven.apache.org/maven2/org/wso2/msf4j/msf4j-swagger/2.5.2/msf4j-swagger-2.5.2.jar.sha1
 	// https://repo.maven.apache.org/maven2/org/wso2/carbon/analytics/org.wso2.carbon.permissions.rest.api/2.0.248/org.wso2.carbon.permissions.rest.api-2.0.248.jar.sha1
-	if len(sha1) == 0 {
-		return nil, nil
+	if len(data) == 0 {
+		return "", nil
 	}
-	// there are xxx.jar.sha1 files with additional data. e.g.:
-	// https://repo.maven.apache.org/maven2/aspectj/aspectjrt/1.5.2a/aspectjrt-1.5.2a.jar.sha1
-	// https://repo.maven.apache.org/maven2/xerces/xercesImpl/2.9.0/xercesImpl-2.9.0.jar.sha1
-	var sha1b []byte
-	for _, s := range strings.Split(strings.TrimSpace(string(sha1)), " ") {
-		sha1b, err = hex.DecodeString(s)
-		if err == nil {
-			break
+
+	// Validate SHA1 as there are xxx.jar.sha1 files with additional data.
+	// e.g.
+	//   https://repo.maven.apache.org/maven2/aspectj/aspectjrt/1.5.2a/aspectjrt-1.5.2a.jar.sha1
+	//   https://repo.maven.apache.org/maven2/xerces/xercesImpl/2.9.0/xercesImpl-2.9.0.jar.sha1
+	sha1, found := lo.Find(strings.Split(strings.TrimSpace(string(data)), " "), func(s string) bool {
+		if _, err = hex.DecodeString(s); err != nil {
+			return false
 		}
-	}
-	if len(sha1b) == 0 {
+		return len(s) == 40
+	})
+	if !found {
 		c.wrongSHA1Values = append(c.wrongSHA1Values, fmt.Sprintf("%s (%s)", url, err))
-		return nil, nil
+		return "", nil
 	}
-	return sha1b, nil
+	return sha1, nil
 }
 
 func (c *Crawler) httpGet(ctx context.Context, url string) (*http.Response, error) {
@@ -399,13 +367,6 @@ func (c *Crawler) httpGet(ctx context.Context, url string) (*http.Response, erro
 		return nil, xerrors.Errorf("http error (%s): %w", url, err)
 	}
 	return resp, nil
-}
-
-func (c *Crawler) versionsFromDB(groupID, artifactID string) (map[string][]byte, error) {
-	if c.dbc == nil {
-		return nil, nil
-	}
-	return c.dbc.SelectVersionsByArtifactIDAndGroupID(artifactID, groupID)
 }
 
 // parseItemName parses item name and returns groupID, artifactID and version

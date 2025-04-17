@@ -1,6 +1,7 @@
 package builder
 
 import (
+	"encoding/hex"
 	"encoding/json"
 	"io"
 	"log/slog"
@@ -34,8 +35,7 @@ func NewBuilder(db db.DB, meta db.Client) Builder {
 	}
 }
 
-func (b *Builder) Build(cacheDir string) error {
-	indexDir := filepath.Join(cacheDir, "indexes")
+func (b *Builder) Build(indexDir string) error {
 	count, err := fileutil.Count(indexDir)
 	if err != nil {
 		return xerrors.Errorf("count error: %w", err)
@@ -52,16 +52,26 @@ func (b *Builder) Build(cacheDir string) error {
 		}
 
 		// Convert directory path to groupID and artifactID
-		dir := filepath.Dir(path)
+		rel, err := filepath.Rel(indexDir, path)
+		if err != nil {
+			return xerrors.Errorf("failed to get relative path: %w", err)
+		}
+		dir := filepath.Dir(rel)
 		groupID, artifactID := filepath.Split(dir)
-		groupID = strings.ReplaceAll(groupID, string(filepath.Separator), ".")
+		groupID = strings.ReplaceAll(filepath.Clean(groupID), string(filepath.Separator), ".")
 
 		for _, ver := range index.Versions {
+			sha1, err := hex.DecodeString(ver.SHA1)
+			if err != nil {
+				slog.Error("failed to decode SHA1", slog.Any("error", err), slog.String("sha1", ver.SHA1))
+				continue // Should never happen as we validate SHA1 in crawler
+			}
+
 			indexes = append(indexes, types.Index{
 				GroupID:     groupID,
 				ArtifactID:  artifactID,
 				Version:     ver.Version,
-				SHA1:        ver.SHA1,
+				SHA1:        sha1,
 				ArchiveType: index.Packaging,
 			})
 		}

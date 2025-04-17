@@ -107,7 +107,7 @@ func TestCrawl(t *testing.T) {
 			}
 
 			cl, err := crawler.NewCrawler(crawler.Option{
-				GcsUrl:       gts.URL + "/",
+				GcsURL:       gts.URL + "/",
 				Limit:        tt.limit,
 				CacheDir:     tmpDir,
 				WithoutRetry: true,
