@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"math/rand"
 	"net/http"
+	"os"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -254,11 +255,27 @@ func (c *Crawler) crawlSHA1(ctx context.Context, groupID, artifactID string, dir
 		slog.Info(fmt.Sprintf("Crawled %d artifacts", atomic.LoadInt64(&c.count)))
 	}
 
-	var foundVersions []types.Version
+	filePathElements := []string{c.dir}
+	filePathElements = append(filePathElements, strings.Split(groupID, ".")...) // Convert groupID to directory names
+	filePathElements = append(filePathElements, artifactID, fmt.Sprintf("%s.json", artifactID))
+	filePath := filepath.Join(filePathElements...)
+
+	savedVersions, err := c.savedVersions(filePath)
+	if err != nil {
+		return xerrors.Errorf("unable to get saved versions: %w", err)
+	}
+
+	var newVersions []types.Version
 	// Check each version dir to find links to `*.jar.sha1` files.
 	for _, itemNames := range dirs {
 		for _, itemName := range itemNames {
 			_, _, _, ver := parseItemName(itemName)
+			if lo.ContainsBy(savedVersions, func(v types.Version) bool {
+				return v.Version == ver
+			}) {
+				continue
+			}
+
 			sha1, err := c.fetchSHA1(ctx, itemName)
 			if err != nil {
 				return xerrors.Errorf("unable to fetch sha1: %s", err)
@@ -268,32 +285,50 @@ func (c *Crawler) crawlSHA1(ctx context.Context, groupID, artifactID string, dir
 			// Avoid overwriting dirVersion when inserting versions into the database (sha1 is uniq blob)
 			// e.g. `cudf-0.14-cuda10-1.jar.sha1` should not overwrite `cudf-0.14.jar.sha1`
 			// https://repo.maven.apache.org/maven2/ai/rapids/cudf/0.14/
-			foundVersions = append(foundVersions, types.Version{
+			newVersions = append(newVersions, types.Version{
 				Version: ver,
 				SHA1:    sha1,
 			})
 		}
 	}
 
-	if len(foundVersions) == 0 {
+	if len(newVersions) == 0 {
 		return nil
 	}
 
-	slices.SortFunc(foundVersions, func(a, b types.Version) int {
+	slog.Info("Saving newly found versions", slog.Int("count", len(newVersions)), slog.String("groupID", groupID), slog.String("artifactId", artifactID))
+	versions := slices.Concat(savedVersions, newVersions)
+	slices.SortFunc(versions, func(a, b types.Version) int {
 		return strings.Compare(a.Version, b.Version)
 	})
 
 	index := &Index{
-		Versions:  foundVersions,
+		Versions:  versions,
 		Packaging: types.JarType,
 	}
-	filePath := []string{c.dir}
-	filePath = append(filePath, strings.Split(groupID, ".")...) // Convert groupID to directory names
-	filePath = append(filePath, artifactID, fmt.Sprintf("%s.json", artifactID))
-	if err := fileutil.WriteJSON(filepath.Join(filePath...), index); err != nil {
+	if err := fileutil.WriteJSON(filePath, index); err != nil {
 		return xerrors.Errorf("json write error: %w", err)
 	}
 	return nil
+}
+
+func (c *Crawler) savedVersions(filePath string) ([]types.Version, error) {
+	if !fileutil.Exists(filePath) {
+		return nil, nil
+	}
+
+	f, err := os.Open(filePath)
+	if err != nil {
+		return nil, xerrors.Errorf("unable to open file: %w", err)
+	}
+	defer f.Close()
+
+	var index Index
+	if err := json.NewDecoder(f).Decode(&index); err != nil {
+		return nil, xerrors.Errorf("unable to read json: %w", err)
+	}
+
+	return index.Versions, nil
 }
 
 func (c *Crawler) fetchSHA1(ctx context.Context, itemName string) (string, error) {

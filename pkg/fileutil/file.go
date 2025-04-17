@@ -79,3 +79,8 @@ func WriteJSON(filePath string, index interface{}) error {
 	}
 	return nil
 }
+
+func Exists(filePath string) bool {
+	_, err := os.Stat(filePath)
+	return !os.IsNotExist(err)
+}
