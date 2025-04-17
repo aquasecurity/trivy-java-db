@@ -16,10 +16,8 @@ type Versioning struct {
 }
 
 type Index struct {
-	GroupID     string
-	ArtifactID  string
-	Versions    []types.Version
-	ArchiveType types.ArchiveType
+	Versions  []types.Version   `json:"vs"`
+	Packaging types.ArchiveType `json:"p"`
 }
 
 type GcsApiResponse struct {
