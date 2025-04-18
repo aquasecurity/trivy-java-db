@@ -26,9 +26,10 @@ func main() {
 
 var (
 	// Used for flags.
-	cacheDir string
-	indexDir string
-	limit    int
+	cacheDir   string
+	indexDir   string
+	limit      int
+	shardCount int
 
 	rootCmd = &cobra.Command{
 		Use:   "trivy-java-db",
@@ -61,6 +62,7 @@ func init() {
 	rootCmd.PersistentFlags().StringVar(&indexDir, "index-dir", filepath.Join(userCacheDir, "maven-index"),
 		"index repo dir")
 	rootCmd.PersistentFlags().IntVar(&limit, "limit", 300, "max parallelism")
+	crawlCmd.Flags().IntVar(&shardCount, "shards", 256, "number of shards")
 
 	rootCmd.AddCommand(crawlCmd)
 	rootCmd.AddCommand(buildCmd)
@@ -71,6 +73,7 @@ func init() {
 func crawl(ctx context.Context) error {
 	c, err := crawler.NewCrawler(crawler.Option{
 		Limit:    limit,
+		Shard:    shardCount,
 		CacheDir: cacheDir,
 		IndexDir: filepath.Join(indexDir, "central"),
 	})
