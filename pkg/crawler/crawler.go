@@ -364,6 +364,11 @@ func (l *Lister) Run(ctx context.Context, itemCh chan<- string) error {
 				return ctx.Err()
 			case itemCh <- item.Name:
 				l.processed++
+
+				// Log every 100,000 processed items
+				if l.processed%100000 == 0 {
+					l.logger.Info(fmt.Sprintf("Listed %d artifacts", l.processed))
+				}
 			}
 		}
 
@@ -552,7 +557,7 @@ func (a *Aggregator) Run(recordsCh <-chan Record) error {
 
 		// Periodically flush to disk
 		a.recordsProcessed++
-		if a.recordsProcessed%10000 == 0 {
+		if a.recordsProcessed%100000 == 0 {
 			// Flush all writers
 			a.flushWriters()
 			a.logger.Info(fmt.Sprintf("Processed %d records", a.recordsProcessed))
@@ -573,17 +578,28 @@ func (a *Aggregator) newWriter(shardIdx int) (*csv.Writer, error) {
 		return writer, nil
 	}
 
-	// Create base directory if it doesn't exist
-	if err := os.MkdirAll(a.baseDir, 0755); err != nil {
-		return nil, xerrors.Errorf("failed to create base directory: %w", err)
-	}
-
 	// Determine format string based on number of shards
 	digits := digitsFor(a.shardCount)
-	format := fmt.Sprintf("%%0%dx.tsv", digits)
 
-	// Create or open the TSV file using dynamic hex format for shard index (append mode)
-	outPath := filepath.Join(a.baseDir, fmt.Sprintf(format, shardIdx))
+	// Format the shard index as a hex string with appropriate padding
+	hexIndex := fmt.Sprintf("%0*x", digits, shardIdx)
+
+	// Create hierarchical directory structure with 2 characters per level
+	// For example: 0001 -> 00/01.tsv, 0a2b -> 0a/2b.tsv
+
+	// Split hex string into segments of 2 characters using lo.ChunkString
+	segments := lo.ChunkString(hexIndex, 2)
+
+	// Last segment is the filename
+	subPath := filepath.Join(segments...) + ".tsv"
+	outPath := filepath.Join(a.baseDir, subPath)
+
+	// Create subdirectories
+	if err := os.MkdirAll(filepath.Dir(outPath), 0755); err != nil {
+		return nil, xerrors.Errorf("failed to create shard directory: %w", err)
+	}
+
+	// Create or open the TSV file
 	file, err := os.OpenFile(outPath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
 	if err != nil {
 		return nil, xerrors.Errorf("failed to open file: %w", err)
