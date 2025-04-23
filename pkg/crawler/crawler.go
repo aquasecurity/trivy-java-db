@@ -12,7 +12,6 @@ import (
 	"io/fs"
 	"log/slog"
 	"math"
-	"math/rand"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -649,9 +648,6 @@ func digitsFor(n int) int {
 }
 
 func httpGet(ctx context.Context, client *retryablehttp.Client, url string) (*http.Response, error) {
-	// Sleep for a while to avoid 429 error
-	randomSleep()
-
 	req, err := retryablehttp.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
 		return nil, xerrors.Errorf("unable to create a HTTP request: %w", err)
@@ -683,12 +679,6 @@ func parseItemName(name string) (string, string, string, string) {
 	version := strings.TrimSuffix(strings.TrimPrefix(ss[len(ss)-1], artifactID+"-"), ".jar.sha1")
 
 	return groupID, artifactID, versionDir, version
-}
-
-func randomSleep() {
-	// Seed rand
-	r := rand.New(rand.NewSource(int64(time.Now().Nanosecond())))
-	time.Sleep(time.Duration(r.Float64() * float64(100*time.Millisecond)))
 }
 
 // Utility function: hash GroupId + ArtifactId for sharding
