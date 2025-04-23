@@ -45,6 +45,7 @@ type Lister struct {
 	client    *GCS
 	gcsURL    string
 	processed atomic.Uint32
+	limit     int
 	logger    *slog.Logger
 }
 
@@ -166,17 +167,24 @@ func (c *Crawler) crawlWithPipeline(ctx context.Context) error {
 
 	gcs := NewGCS(c.http, c.gcsURL)
 
+	// When we have already processed GAVs, most GAVs will be skipped during SHA1 fetching,
+	// resulting in very few actual fetch operations in the fetcher. This allows us to
+	// increase the parallelism of the listing process.
+	listerLimit := lo.Ternary(len(c.storedGAVs) > 1_000_000, c.limit*6/10, c.limit*2/10)
+	fetcherLimit := c.limit - listerLimit
+
 	// Create component instances
 	lister := &Lister{
 		client: gcs,
 		gcsURL: c.gcsURL,
+		limit:  listerLimit,
 		logger: slog.Default().With(slog.String("component", "lister")),
 	}
 
 	fetcher := &Fetcher{
 		client:     gcs,
 		gcrURL:     c.gcsURL,
-		limit:      c.limit,
+		limit:      fetcherLimit,
 		storedGAVs: c.storedGAVs, // Direct reference to the map as read-only
 		logger:     slog.Default().With(slog.String("component", "fetcher")),
 	}
@@ -325,7 +333,7 @@ func (c *Crawler) loadExistingIndexes() error {
 
 // Run starts the lister component which lists artifacts from GCS
 func (l *Lister) Run(ctx context.Context, itemCh chan<- string) error {
-	l.logger.Info("Starting GCS artifact lister")
+	l.logger.Info("Starting GCS artifact lister", slog.Int("limit", l.limit))
 
 	// Create worker pool for parallel processing of prefixes
 	g, ctx := errgroup.WithContext(ctx)
