@@ -3,8 +3,6 @@ package crawler
 import (
 	"context"
 	"encoding/csv"
-	"encoding/hex"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"hash/fnv"
@@ -44,15 +42,15 @@ type Record struct {
 
 // Lister handles listing artifact names from GCS
 type Lister struct {
-	client    *retryablehttp.Client
+	client    *GCS
 	gcsURL    string
-	processed int
+	processed atomic.Uint32
 	logger    *slog.Logger
 }
 
 // Fetcher fetches SHA1 hash values for artifacts
 type Fetcher struct {
-	client     *retryablehttp.Client
+	client     *GCS
 	gcrURL     string
 	logger     *slog.Logger
 	limit      int
@@ -70,6 +68,7 @@ type Aggregator struct {
 	logger           *slog.Logger
 }
 
+// Crawler holds the state for Maven artifact crawling
 type Crawler struct {
 	dir  string
 	http *retryablehttp.Client
@@ -165,19 +164,22 @@ func (c *Crawler) crawlWithPipeline(ctx context.Context) error {
 	// Create main error group for pipeline coordination
 	g, ctx := errgroup.WithContext(ctx)
 
+	gcs := NewGCS(c.http, c.gcsURL)
+
 	// Create component instances
 	lister := &Lister{
-		client: c.http,
+		client: gcs,
 		gcsURL: c.gcsURL,
 		logger: slog.Default().With(slog.String("component", "lister")),
 	}
 
 	fetcher := &Fetcher{
-		client:     c.http,
+		client:     gcs,
 		gcrURL:     c.gcsURL,
 		limit:      c.limit,
 		storedGAVs: c.storedGAVs, // Direct reference to the map as read-only
 		logger:     slog.Default().With(slog.String("component", "fetcher")),
+		wrongSHA1s: []string{},
 	}
 
 	aggregator := &Aggregator{
@@ -207,17 +209,17 @@ func (c *Crawler) crawlWithPipeline(ctx context.Context) error {
 
 	// Wait for the pipeline (lister, fetchers, aggregator) to complete
 	if err := g.Wait(); err != nil {
-		slog.Error("Pipeline error", slog.Any("error", err), slog.Int("artifacts_processed", lister.processed),
+		slog.Error("Pipeline error", slog.Any("error", err), slog.Int("artifacts_processed", int(lister.processed.Load())),
 			slog.Int64("records_processed", aggregator.recordsProcessed))
 		return xerrors.Errorf("pipeline error: %w", err)
 	}
 
 	// Report results
-	slog.Info("Crawl pipeline completed", slog.Int("artifacts_processed", lister.processed),
+	slog.Info("Crawl pipeline completed", slog.Int("artifacts_processed", int(lister.processed.Load())),
 		slog.Int64("records_processed", aggregator.recordsProcessed), slog.Int("error_count", len(fetcher.wrongSHA1s)))
 
 	for _, wrongSHA1 := range fetcher.wrongSHA1s {
-		slog.Error("Wrong SHA1", slog.String("error", wrongSHA1))
+		slog.Error("Wrong SHA1", slog.String("item", wrongSHA1))
 	}
 
 	return nil
@@ -330,75 +332,47 @@ func (c *Crawler) loadExistingIndexes() error {
 func (l *Lister) Run(ctx context.Context, itemCh chan<- string) error {
 	l.logger.Info("Starting GCS artifact lister")
 
-	url := l.gcsURL + "storage/v1/b/maven-central/o/"
-	req, err := retryablehttp.NewRequestWithContext(ctx, http.MethodGet, url, nil)
-	if err != nil {
-		return xerrors.Errorf("unable to create a HTTP request: %w", err)
+	// Create worker pool for parallel processing of prefixes
+	g, ctx := errgroup.WithContext(ctx)
+	g.SetLimit(10) // Limit concurrent prefix processing
+
+	// First, get top-level prefixes to enable parallel processing
+	// And process each prefix in parallel
+	var processedPrefixes int
+	for prefix := range l.client.TopLevelPrefixes(ctx) {
+		g.Go(func() error {
+			return l.processPrefix(ctx, prefix, itemCh)
+		})
+		processedPrefixes++
 	}
 
-	// Configure the query parameters for GCS API
-	query := req.URL.Query()
-	query.Set("prefix", "maven2/")
-	query.Set("matchGlob", "**/*.jar.sha1")
-	query.Set("maxResults", "10000") // Increased from 5000 to 10000 for better performance
-	req.URL.RawQuery = query.Encode()
-
-	// Fetch artifacts page by page
-	for {
-		r, err := l.fetchItems(ctx, req)
-		if err != nil {
-			return xerrors.Errorf("unable to get items: %w", err)
-		}
-
-		for _, item := range r.Items {
-			// Don't process sources, test, javadocs, scaladoc files
-			if strings.HasSuffix(item.Name, "sources.jar.sha1") || strings.HasSuffix(item.Name, "test.jar.sha1") ||
-				strings.HasSuffix(item.Name, "tests.jar.sha1") || strings.HasSuffix(item.Name, "javadoc.jar.sha1") ||
-				strings.HasSuffix(item.Name, "scaladoc.jar.sha1") {
-				continue
-			}
-
-			select {
-			case <-ctx.Done():
-				return ctx.Err()
-			case itemCh <- item.Name:
-				l.processed++
-
-				// Log every 100,000 processed items
-				if l.processed%100000 == 0 {
-					l.logger.Info(fmt.Sprintf("Listed %d artifacts", l.processed))
-				}
-			}
-		}
-
-		// Check if there are more pages
-		if r.NextPageToken == "" {
-			break
-		}
-
-		// Set up next page token
-		query.Set("pageToken", r.NextPageToken)
-		req.URL.RawQuery = query.Encode()
+	// Wait for all prefix processing to complete
+	if err := g.Wait(); err != nil {
+		return xerrors.Errorf("error processing prefixes: %w", err)
 	}
 
-	l.logger.Info("GCS artifact listing completed", slog.Int("total", l.processed))
+	l.logger.Info("GCS artifact listing completed", slog.Int("total", int(l.processed.Load())), slog.Int("prefixes", processedPrefixes))
 	return nil
 }
 
-// fetchItems retrieves a page of items from GCS API
-func (l *Lister) fetchItems(ctx context.Context, req *retryablehttp.Request) (GcsApiResponse, error) {
-	resp, err := httpGet(ctx, l.client, req.URL.String())
-	if err != nil {
-		return GcsApiResponse{}, xerrors.Errorf("http error (%s): %w", req.URL.String(), err)
-	}
-	defer resp.Body.Close()
+// processPrefix processes a single prefix, listing all matching artifacts
+func (l *Lister) processPrefix(ctx context.Context, prefix string, itemCh chan<- string) error {
+	// Use the JARSHA1Files iterator from GCS
+	for item := range l.client.JARSHA1Files(ctx, prefix) {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case itemCh <- item:
+			// Thread-safe increment using atomic
+			processed := l.processed.Add(1)
 
-	var res GcsApiResponse
-	if err = json.NewDecoder(resp.Body).Decode(&res); err != nil {
-		return GcsApiResponse{}, xerrors.Errorf("unable to parse API response: %w", err)
+			// Log every 100,000 processed items
+			if processed%100000 == 0 {
+				l.logger.Info(fmt.Sprintf("Listed %d artifacts", processed))
+			}
+		}
 	}
-
-	return res, nil
+	return nil
 }
 
 // Run starts the fetcher component which downloads SHA1 files
@@ -445,9 +419,13 @@ func (f *Fetcher) fetch(ctx context.Context, item string, recordCh chan<- Record
 		return nil
 	}
 
-	// Fetch SHA1 value
-	sha1, err := f.fetchSHA1(ctx, item)
+	// Use the provided Maven client
+	sha1, err := f.client.FetchSHA1(ctx, item)
 	if err != nil {
+		// Record wrong SHA1 patterns
+		if errors.Is(err, errInvalidSHA1Format) {
+			f.wrongSHA1s = append(f.wrongSHA1s, item)
+		}
 		f.logger.Warn("Failed to fetch SHA1", slog.String("item", item), slog.Any("error", err))
 		return nil
 	} else if sha1 == "" {
@@ -467,51 +445,6 @@ func (f *Fetcher) fetch(ctx context.Context, item string, recordCh chan<- Record
 	}:
 	}
 	return nil
-}
-
-// fetchSHA1 downloads and extracts SHA1 hash for an artifact
-func (f *Fetcher) fetchSHA1(ctx context.Context, itemName string) (string, error) {
-	url := f.gcrURL + "maven-central/" + itemName
-	resp, err := httpGet(ctx, f.client, url)
-	if err != nil {
-		return "", xerrors.Errorf("http get error: %w", err)
-	}
-	defer func() { _ = resp.Body.Close() }()
-
-	// These are cases when version dir contains link to sha1 file
-	// But file doesn't exist
-	// e.g. https://repo.maven.apache.org/maven2/com/adobe/aem/uber-jar/6.4.8.2/uber-jar-6.4.8.2-sources.jar.sha1
-	if resp.StatusCode == http.StatusNotFound {
-		return "", nil // TODO add special error for this
-	}
-
-	data, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return "", xerrors.Errorf("can't read sha1 %s: %w", url, err)
-	}
-
-	// there are empty xxx.jar.sha1 files. Skip them.
-	// e.g. https://repo.maven.apache.org/maven2/org/wso2/msf4j/msf4j-swagger/2.5.2/msf4j-swagger-2.5.2.jar.sha1
-	// https://repo.maven.apache.org/maven2/org/wso2/carbon/analytics/org.wso2.carbon.permissions.rest.api/2.0.248/org.wso2.carbon.permissions.rest.api-2.0.248.jar.sha1
-	if len(data) == 0 {
-		return "", nil
-	}
-
-	// Validate SHA1 as there are xxx.jar.sha1 files with additional data.
-	// e.g.
-	//   https://repo.maven.apache.org/maven2/aspectj/aspectjrt/1.5.2a/aspectjrt-1.5.2a.jar.sha1
-	//   https://repo.maven.apache.org/maven2/xerces/xercesImpl/2.9.0/xercesImpl-2.9.0.jar.sha1
-	sha1, found := lo.Find(strings.Split(strings.TrimSpace(string(data)), " "), func(s string) bool {
-		if _, err = hex.DecodeString(s); err != nil {
-			return false
-		}
-		return len(s) == 40
-	})
-	if !found {
-		f.wrongSHA1s = append(f.wrongSHA1s, fmt.Sprintf("%s (%s)", url, err))
-		return "", nil
-	}
-	return sha1, nil
 }
 
 // Run processes records and writes them to appropriate shard files
@@ -645,18 +578,6 @@ func digitsFor(n int) int {
 		return 2
 	}
 	return d
-}
-
-func httpGet(ctx context.Context, client *retryablehttp.Client, url string) (*http.Response, error) {
-	req, err := retryablehttp.NewRequestWithContext(ctx, http.MethodGet, url, nil)
-	if err != nil {
-		return nil, xerrors.Errorf("unable to create a HTTP request: %w", err)
-	}
-	resp, err := client.Do(req)
-	if err != nil {
-		return nil, xerrors.Errorf("http error (%s): %w", url, err)
-	}
-	return resp, nil
 }
 
 // parseItemName parses item name and returns groupID, artifactID, versionDir and version

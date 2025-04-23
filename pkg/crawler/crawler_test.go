@@ -145,7 +145,7 @@ func writeSha1(t *testing.T, w http.ResponseWriter, r *http.Request, fileNames m
 
 func writeGCSResponse(t *testing.T, w http.ResponseWriter, r *http.Request, sha1Urls []string, maxResults int) error {
 	t.Helper()
-	resp := crawler.GcsApiResponse{}
+	resp := crawler.GCSListResponse{}
 	q := r.URL.Query()
 
 	pageToken := q.Get("pageToken")

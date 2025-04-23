@@ -13,9 +13,10 @@ type Versioning struct {
 	LastUpdated string   `xml:"lastUpdated"`
 }
 
-type GcsApiResponse struct {
-	NextPageToken string `json:"nextPageToken,omitempty"`
-	Items         []Item `json:"items,omitempty"`
+type GCSListResponse struct {
+	NextPageToken string   `json:"nextPageToken,omitempty"`
+	Items         []Item   `json:"items,omitempty"`
+	Prefixes      []string `json:"prefixes,omitempty"`
 }
 
 type Item struct {
