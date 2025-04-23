@@ -340,7 +340,7 @@ func (l *Lister) Run(ctx context.Context, itemCh chan<- string) error {
 	query := req.URL.Query()
 	query.Set("prefix", "maven2/")
 	query.Set("matchGlob", "**/*.jar.sha1")
-	query.Set("maxResults", "5000")
+	query.Set("maxResults", "10000") // Increased from 5000 to 10000 for better performance
 	req.URL.RawQuery = query.Encode()
 
 	// Fetch artifacts page by page
