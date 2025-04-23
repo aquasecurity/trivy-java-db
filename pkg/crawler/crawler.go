@@ -55,7 +55,7 @@ type Fetcher struct {
 	logger     *slog.Logger
 	limit      int
 	storedGAVs map[uint64]struct{} // Pre-populated map of GAVs, used as read-only in fetcher
-	wrongSHA1s []string
+	errCount   atomic.Uint32
 }
 
 // Aggregator writes records to shard files
@@ -179,7 +179,6 @@ func (c *Crawler) crawlWithPipeline(ctx context.Context) error {
 		limit:      c.limit,
 		storedGAVs: c.storedGAVs, // Direct reference to the map as read-only
 		logger:     slog.Default().With(slog.String("component", "fetcher")),
-		wrongSHA1s: []string{},
 	}
 
 	aggregator := &Aggregator{
@@ -216,11 +215,7 @@ func (c *Crawler) crawlWithPipeline(ctx context.Context) error {
 
 	// Report results
 	slog.Info("Crawl pipeline completed", slog.Int("artifacts_processed", int(lister.processed.Load())),
-		slog.Int64("records_processed", aggregator.recordsProcessed), slog.Int("error_count", len(fetcher.wrongSHA1s)))
-
-	for _, wrongSHA1 := range fetcher.wrongSHA1s {
-		slog.Error("Wrong SHA1", slog.String("item", wrongSHA1))
-	}
+		slog.Int64("records_processed", aggregator.recordsProcessed), slog.Int("errors", int(fetcher.errCount.Load())))
 
 	return nil
 }
@@ -421,14 +416,10 @@ func (f *Fetcher) fetch(ctx context.Context, item string, recordCh chan<- Record
 
 	// Use the provided Maven client
 	sha1, err := f.client.FetchSHA1(ctx, item)
-	if err != nil {
-		// Record wrong SHA1 patterns
-		if errors.Is(err, errInvalidSHA1Format) {
-			f.wrongSHA1s = append(f.wrongSHA1s, item)
-		}
+	if sha1 == "N/A" {
+		f.errCount.Add(1)
+	} else if err != nil {
 		f.logger.Warn("Failed to fetch SHA1", slog.String("item", item), slog.Any("error", err))
-		return nil
-	} else if sha1 == "" {
 		return nil
 	}
 
