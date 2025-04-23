@@ -95,13 +95,12 @@ func (s *GCS) FetchSHA1(ctx context.Context, itemName string) (string, error) {
 	}
 	data = bytes.TrimSpace(data)
 
-	// Skip empty SHA1 files
+	// Handle empty SHA1 files
 	// e.g.
 	//    https://repo.maven.apache.org/maven2/org/wso2/msf4j/msf4j-swagger/2.5.2/msf4j-swagger-2.5.2.jar.sha1
 	//    https://repo.maven.apache.org/maven2/org/wso2/carbon/analytics/org.wso2.carbon.permissions.rest.api/2.0.248/org.wso2.carbon.permissions.rest.api-2.0.248.jar.sha1
-
 	if len(data) == 0 {
-		return "", nil
+		return "-", nil
 	}
 
 	// Find a valid SHA1 hash in the content
