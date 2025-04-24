@@ -1,22 +1,20 @@
 package builder
 
 import (
+	"encoding/csv"
 	"encoding/hex"
-	"encoding/json"
 	"io"
 	"log/slog"
 	"path/filepath"
-	"strings"
 	"time"
 
-	"github.com/cheggaaa/pb/v3"
 	"golang.org/x/xerrors"
 	"k8s.io/utils/clock"
 
-	"github.com/aquasecurity/trivy-java-db/pkg/crawler"
 	"github.com/aquasecurity/trivy-java-db/pkg/db"
 	"github.com/aquasecurity/trivy-java-db/pkg/fileutil"
 	"github.com/aquasecurity/trivy-java-db/pkg/types"
+	"github.com/cheggaaa/pb/v3"
 )
 
 const updateInterval = time.Hour * 24 * 3 // 3 days
@@ -36,62 +34,88 @@ func NewBuilder(db db.DB, meta db.Client) Builder {
 }
 
 func (b *Builder) Build(indexDir string) error {
+	slog.Info("Building the index database")
 	count, err := fileutil.Count(indexDir)
 	if err != nil {
 		return xerrors.Errorf("count error: %w", err)
 	}
 	bar := pb.StartNew(count)
-	defer slog.Info("Build completed")
+	defer slog.Info("Build completed", slog.Int("count", count))
 	defer bar.Finish()
 
-	var indexes []types.Index
-	if err := fileutil.Walk(indexDir, func(r io.Reader, path string) error {
-		var index crawler.Index
-		if err := json.NewDecoder(r).Decode(&index); err != nil {
-			return xerrors.Errorf("failed to decode index: %w", err)
+	err = fileutil.Walk(indexDir, func(r io.Reader, path string) error {
+		// 	// Process only TSV files
+		if filepath.Ext(path) != ".tsv" {
+			return nil
 		}
+		defer bar.Increment()
 
-		// Convert directory path to groupID and artifactID
-		rel, err := filepath.Rel(indexDir, path)
-		if err != nil {
-			return xerrors.Errorf("failed to get relative path: %w", err)
-		}
-		dir, base := filepath.Split(rel)
-		version := strings.TrimSuffix(base, ".json")
-		ga, _ := filepath.Split(dir)
-		groupID, artifactID := filepath.Split(ga)
-		groupID = strings.ReplaceAll(filepath.Clean(groupID), string(filepath.Separator), ".")
+		// Create a CSV reader for TSV format
+		reader := csv.NewReader(r)
+		reader.Comma = '\t' // Use tab as delimiter
+		reader.FieldsPerRecord = 5
+		reader.ReuseRecord = true // Reuse memory for performance
 
-		sha1, err := hex.DecodeString(index.SHA1)
-		if err != nil {
-			slog.Error("failed to decode SHA1", slog.Any("error", err), slog.String("sha1", index.SHA1))
-			return xerrors.Errorf("failed to decode SHA1: %w", err) // Should never happen as we validate SHA1 in crawler
-		}
+		var indexes, versionMismatchIndexes []types.Index
 
-		indexes = append(indexes, types.Index{
-			GroupID:     groupID,
-			ArtifactID:  artifactID,
-			Version:     version,
-			SHA1:        sha1,
-			ArchiveType: types.JarType, // Always JAR for now
-		})
-
-		bar.Increment()
-
-		if len(indexes) > 1000 {
-			if err = b.db.InsertIndexes(indexes); err != nil {
-				return xerrors.Errorf("failed to insert index to db: %w", err)
+		// Process all records in this file
+		for {
+			// Read one record
+			record, err := reader.Read()
+			if err == io.EOF {
+				break
+			} else if err != nil {
+				// Log but continue on error
+				slog.Warn("Error reading TSV record", slog.String("file", path), slog.Any("error", err))
+				continue
 			}
-			indexes = []types.Index{}
+
+			// Need at least GroupID, ArtifactID, Version
+			if len(record) != 5 {
+				continue // Skip invalid records
+			}
+
+			groupID, artifactID, versionDir, version, sha1str := record[0], record[1], record[2], record[3], record[4]
+			if sha1str == "N/A" {
+				continue // Skip records with no SHA1
+			}
+
+			sha1, err := hex.DecodeString(sha1str)
+			if err != nil {
+				slog.Error("failed to decode SHA1", slog.Any("error", err), slog.String("sha1", sha1str))
+				return xerrors.Errorf("failed to decode SHA1: %w", err) // Should never happen as we validate SHA1 in crawler
+			}
+
+			index := types.Index{
+				GroupID:     groupID,
+				ArtifactID:  artifactID,
+				Version:     version,
+				SHA1:        sha1,
+				ArchiveType: types.JarType, // Always JAR for now
+			}
+
+			if index.Version == "-" {
+				// The version in the file name is the same as the version directory.
+				// e.g.  https://repo.maven.apache.org/maven2/ai/rapids/cudf/0.14/cudf-0.14.jar.sha1
+				index.Version = versionDir // Use "-" for disk space efficiency when the version in a file name is the same as the version directory
+				indexes = append(indexes, index)
+			} else {
+				// The version in the file name can be different from the version in the path.
+				// e.g. https://repo.maven.apache.org/maven2/ai/rapids/cudf/0.14/cudf-0.14-cuda10-1.jar.sha1 (0.14 vs 0.14-cuda10-1)
+				versionMismatchIndexes = append(versionMismatchIndexes, index)
+			}
+		}
+
+		// Insert indexes with version match first, and then with version mismatch so they will not override the indexes with version match.
+		// The version mismatch indexes might be rejected by the unique constraint on sha1.
+		indexes = append(indexes, versionMismatchIndexes...)
+		if err := b.db.InsertIndexes(indexes); err != nil {
+			return xerrors.Errorf("failed to insert index to db: %w", err)
 		}
 		return nil
-	}); err != nil {
+	})
+	if err != nil {
 		return xerrors.Errorf("walk error: %w", err)
-	}
-
-	// Insert the remaining indexes
-	if err = b.db.InsertIndexes(indexes); err != nil {
-		return xerrors.Errorf("failed to insert index to db: %w", err)
 	}
 
 	if err := b.db.VacuumDB(); err != nil {

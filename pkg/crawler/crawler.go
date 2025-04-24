@@ -5,7 +5,6 @@ import (
 	"encoding/csv"
 	"errors"
 	"fmt"
-	"hash/fnv"
 	"io"
 	"io/fs"
 	"log/slog"
@@ -25,6 +24,7 @@ import (
 	"golang.org/x/xerrors"
 
 	"github.com/aquasecurity/trivy-java-db/pkg/fileutil"
+	"github.com/aquasecurity/trivy-java-db/pkg/hash"
 )
 
 const (
@@ -302,7 +302,7 @@ func (c *Crawler) loadExistingIndexes() error {
 				groupID, artifactID, versionDir := record[0], record[1], record[2]
 
 				// Hash GAV and add to map
-				gavHash := hashGAV(groupID, artifactID, versionDir)
+				gavHash := hash.GAV(groupID, artifactID, versionDir)
 				c.mutex.Lock()
 				c.storedGAVs[gavHash] = struct{}{}
 				c.mutex.Unlock()
@@ -417,7 +417,7 @@ func (f *Fetcher) fetch(ctx context.Context, item string, recordCh chan<- Record
 	// Skip if already processed
 	// NOTE: We only need to check if this GAV has been processed before,
 	// no need to store anything as the map is pre-populated
-	gavHash := hashGAV(groupID, artifactID, versionDir)
+	gavHash := hash.GAV(groupID, artifactID, versionDir)
 	if _, exists := f.storedGAVs[gavHash]; exists {
 		return nil
 	}
@@ -455,7 +455,7 @@ func (a *Aggregator) Run(recordsCh <-chan Record) error {
 
 	for rec := range recordsCh {
 		// Calculate shard index based on GroupID+ArtifactID
-		shardIdx := int(hashGA(rec.GroupID, rec.ArtifactID) % uint64(a.shardCount))
+		shardIdx := int(hash.GA(rec.GroupID, rec.ArtifactID) % uint64(a.shardCount))
 
 		// Get or create writer for this shard
 		writer, err := a.newWriter(shardIdx)
@@ -599,24 +599,4 @@ func parseItemName(name string) (string, string, string, string) {
 	version := strings.TrimSuffix(strings.TrimPrefix(ss[len(ss)-1], artifactID+"-"), ".jar.sha1")
 
 	return groupID, artifactID, versionDir, version
-}
-
-// Utility function: hash GroupId + ArtifactId for sharding
-func hashGA(g, a string) uint64 {
-	h := fnv.New64a()
-	h.Write([]byte(g))
-	h.Write([]byte("|"))
-	h.Write([]byte(a))
-	return h.Sum64()
-}
-
-// Utility function: hash GroupId + ArtifactId + Version for deduplication
-func hashGAV(g, a, v string) uint64 {
-	h := fnv.New64a()
-	h.Write([]byte(g))
-	h.Write([]byte("|"))
-	h.Write([]byte(a))
-	h.Write([]byte("|"))
-	h.Write([]byte(v))
-	return h.Sum64()
 }
