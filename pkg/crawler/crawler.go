@@ -152,10 +152,7 @@ func (c *Crawler) Crawl(ctx context.Context) error {
 
 	case SourceTypeCentral:
 		// Create Central Index source
-		source = central.New(c.http, central.Config{
-			CacheDir:   c.dir,
-			StoredGAVs: c.storedGAVs,
-		})
+		source = central.New(c.baseURL, c.storedGAVs)
 	default:
 		return xerrors.Errorf("unsupported source type: %s", c.sourceType)
 	}

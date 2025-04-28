@@ -4,6 +4,7 @@ go 1.24
 
 require (
 	github.com/cheggaaa/pb/v3 v3.1.0
+	github.com/elireisman/maven-index-reader-go v0.0.0-20220907054436-1322e1a9632d
 	github.com/hashicorp/go-retryablehttp v0.7.2
 	github.com/samber/lo v1.39.0
 	github.com/spf13/cobra v1.6.1
@@ -28,6 +29,7 @@ require (
 	github.com/mattn/go-colorable v0.1.8 // indirect
 	github.com/mattn/go-isatty v0.0.16 // indirect
 	github.com/mattn/go-runewidth v0.0.12 // indirect
+	github.com/pkg/errors v0.9.1 // indirect
 	github.com/pmezard/go-difflib v1.0.0 // indirect
 	github.com/remyoudompheng/bigfft v0.0.0-20200410134404-eec4a21b6bb0 // indirect
 	github.com/rivo/uniseg v0.2.0 // indirect
