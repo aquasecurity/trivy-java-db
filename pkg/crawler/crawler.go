@@ -1,9 +1,9 @@
 package crawler
 
 import (
+	"cmp"
 	"context"
 	"encoding/csv"
-	"errors"
 	"fmt"
 	"io"
 	"io/fs"
@@ -23,42 +23,13 @@ import (
 	"golang.org/x/sync/errgroup"
 	"golang.org/x/xerrors"
 
+	"github.com/aquasecurity/trivy-java-db/pkg/crawler/central"
+	"github.com/aquasecurity/trivy-java-db/pkg/crawler/gcs"
+	"github.com/aquasecurity/trivy-java-db/pkg/crawler/types"
 	"github.com/aquasecurity/trivy-java-db/pkg/fileutil"
 	"github.com/aquasecurity/trivy-java-db/pkg/hash"
 	"github.com/aquasecurity/trivy-java-db/pkg/index"
 )
-
-const (
-	gcsURL = "https://storage.googleapis.com/"
-)
-
-// Record represents a Maven artifact index with SHA1 hash
-type Record struct {
-	GroupID    string
-	ArtifactID string
-	Version    string
-	Classifier string // e.g. "lite", "cuda10-1"
-	SHA1       string
-}
-
-// Lister handles listing artifact names from GCS
-type Lister struct {
-	client    *GCS
-	gcsURL    string
-	processed atomic.Uint32
-	limit     int
-	logger    *slog.Logger
-}
-
-// Fetcher fetches SHA1 hash values for artifacts
-type Fetcher struct {
-	client     *GCS
-	gcrURL     string
-	logger     *slog.Logger
-	limit      int
-	storedGAVs map[uint64]struct{} // Pre-populated map of GAVs, used as read-only in fetcher
-	errCount   atomic.Uint32
-}
 
 // Aggregator writes records to shard files
 type Aggregator struct {
@@ -70,13 +41,25 @@ type Aggregator struct {
 	logger           *slog.Logger
 }
 
+// SourceType defines the type of artifact source
+type SourceType string
+
+const (
+	// SourceTypeGCS retrieves artifacts from Google Cloud Storage
+	SourceTypeGCS SourceType = "gcs"
+
+	// SourceTypeCentral retrieves artifacts from Maven Central Index
+	// https://repo.maven.apache.org/maven2/.index/
+	SourceTypeCentral SourceType = "central"
+)
+
 // Crawler holds the state for Maven artifact crawling
 type Crawler struct {
-	dir  string
-	http *retryablehttp.Client
-
-	gcsURL string
-	limit  int
+	dir        string
+	http       *retryablehttp.Client
+	baseURL    string
+	limit      int
+	sourceType SourceType
 
 	// Fields related to sharding
 	shardCount int
@@ -91,10 +74,14 @@ type Crawler struct {
 type Option struct {
 	Shard        int
 	Limit        int
-	GcsURL       string
+	BaseURL      string
 	CacheDir     string
 	IndexDir     string
 	WithoutRetry bool
+
+	// SourceType is the type of artifact source
+	// If not specified, GCS is used as default
+	SourceType SourceType
 }
 
 func NewCrawler(opt Option) (Crawler, error) {
@@ -129,73 +116,66 @@ func NewCrawler(opt Option) (Crawler, error) {
 		return resp, xerrors.Errorf("HTTP request failed after retries: %w", err)
 	}
 
-	if opt.GcsURL == "" {
-		opt.GcsURL = gcsURL
-	}
-
 	slog.Info("Index dir", slog.String("path", opt.IndexDir))
 	slog.Info("Sharding", slog.Int("count", opt.Shard))
 
 	return Crawler{
 		dir:        opt.IndexDir,
 		http:       client,
-		gcsURL:     opt.GcsURL,
+		baseURL:    opt.BaseURL,
 		limit:      opt.Limit,
 		shardCount: opt.Shard,
 		storedGAVs: make(map[uint64]struct{}),
 		mutex:      sync.Mutex{},
+		sourceType: cmp.Or(opt.SourceType, SourceTypeGCS), // Default to GCS if not specified
 	}, nil
 }
 
 func (c *Crawler) Crawl(ctx context.Context) error {
-	slog.Info("Crawl GCS and save indexes")
+	slog.Info("Starting artifact crawling", slog.String("source", string(c.sourceType)))
 
+	// Load existing indexes to avoid duplicate processing
 	if err := c.loadExistingIndexes(); err != nil {
 		return xerrors.Errorf("failed to load existing indexes: %w", err)
 	}
 
-	return c.crawlWithPipeline(ctx)
+	// Create a source based on the configured source type
+	var source types.Source
+	switch c.sourceType {
+	case SourceTypeGCS:
+		// Create GCS source
+		source = gcs.New(c.http, gcs.Options{
+			BaseURL:    c.baseURL,
+			Limit:      c.limit,
+			StoredGAVs: c.storedGAVs,
+		})
+
+	case SourceTypeCentral:
+		// Create Central Index source
+		source = central.New(c.http, central.Config{
+			CacheDir:   c.dir,
+			StoredGAVs: c.storedGAVs,
+		})
+	default:
+		return xerrors.Errorf("unsupported source type: %s", c.sourceType)
+	}
+
+	// Process artifacts using the source
+	return c.crawlWithPipeline(ctx, source)
 }
 
 // crawlWithPipeline implements the crawling process using a data pipeline architecture:
 // Lister → Fetcher → Aggregator
-func (c *Crawler) crawlWithPipeline(ctx context.Context) error {
+func (c *Crawler) crawlWithPipeline(ctx context.Context, source types.Source) error {
 	slog.Info("Starting Maven artifacts crawling pipeline")
 
-	// Create channels for the pipeline stages
-	itemCh := make(chan string, 1<<15)   // 32k buffer
-	recordCh := make(chan Record, 1<<16) // 65k buffer
+	// Create record channel
+	recordCh := make(chan types.Record, 1<<16) // 65k buffer
 
 	// Create main error group for pipeline coordination
 	g, ctx := errgroup.WithContext(ctx)
 
-	gcs := NewGCS(c.http, c.gcsURL)
-
-	// When we have already processed GAVs, most GAVs will be skipped during SHA1 fetching,
-	// resulting in very few actual fetch operations in the fetcher. This allows us to
-	// increase the parallelism of the listing process.
-	listerLimit := lo.Ternary(len(c.storedGAVs) > 1_000_000, c.limit*6/10, c.limit*2/10)
-	if listerLimit == 0 {
-		listerLimit = 1
-	}
-	fetcherLimit := c.limit - listerLimit
-
-	// Create component instances
-	lister := &Lister{
-		client: gcs,
-		gcsURL: c.gcsURL,
-		limit:  listerLimit,
-		logger: slog.Default().With(slog.String("component", "lister")),
-	}
-
-	fetcher := &Fetcher{
-		client:     gcs,
-		gcrURL:     c.gcsURL,
-		limit:      fetcherLimit,
-		storedGAVs: c.storedGAVs, // Direct reference to the map as read-only
-		logger:     slog.Default().With(slog.String("component", "fetcher")),
-	}
-
+	// Create aggregator
 	aggregator := &Aggregator{
 		baseDir:    c.dir,
 		shardCount: c.shardCount,
@@ -204,33 +184,27 @@ func (c *Crawler) crawlWithPipeline(ctx context.Context) error {
 		logger:     slog.Default().With(slog.String("component", "aggregator")),
 	}
 
-	// Stage 1 (Lister): Get all item names suffixing with .jar.sha1 from GCS
+	// Stage 1 (Source): Start source workers to stream records
 	g.Go(func() error {
-		defer close(itemCh) // Close item channel when lister is done
-		return lister.Run(ctx, itemCh)
+		defer close(recordCh) // Close records channel when all records are processed
+		return source.Read(ctx, recordCh)
 	})
 
-	// Stage 2 (Fetcher): Start fetcher workers to fetch SHA1 hash values
-	g.Go(func() error {
-		defer close(recordCh) // Close records channel when all fetchers are done
-		return fetcher.Run(ctx, itemCh, recordCh)
-	})
-
-	// Stage 3 (Aggregator): Start aggregator worker to write records to shard files
+	// Stage 2 (Aggregator): Start aggregator worker to write records to shard files
 	g.Go(func() error {
 		return aggregator.Run(recordCh)
 	})
 
-	// Wait for the pipeline (lister, fetchers, aggregator) to complete
+	// Wait for the pipeline (source, aggregator) to complete
 	if err := g.Wait(); err != nil {
-		slog.Error("Pipeline error", slog.Any("error", err), slog.Int("artifacts_processed", int(lister.processed.Load())),
+		slog.Error("Pipeline error", slog.Any("error", err), slog.Int("artifacts_processed", source.Processed()),
 			slog.Int64("records_processed", aggregator.recordsProcessed))
 		return xerrors.Errorf("pipeline error: %w", err)
 	}
 
 	// Report results
-	slog.Info("Crawl pipeline completed", slog.Int("artifacts_processed", int(lister.processed.Load())),
-		slog.Int64("records_processed", aggregator.recordsProcessed), slog.Int("artifacts_missing_sha1", int(fetcher.errCount.Load())))
+	slog.Info("Artifact crawling completed", slog.Int("artifacts_processed", source.Processed()),
+		slog.Int64("records_processed", aggregator.recordsProcessed), slog.Int("artifacts_missing_sha1", source.Failed()))
 
 	return nil
 }
@@ -335,135 +309,8 @@ func (c *Crawler) loadExistingIndexes() error {
 	return nil
 }
 
-// Run starts the lister component which lists artifacts from GCS
-func (l *Lister) Run(ctx context.Context, itemCh chan<- string) error {
-	l.logger.Info("Starting GCS artifact lister", slog.Int("limit", l.limit))
-
-	// Create worker pool for parallel processing of prefixes
-	g, ctx := errgroup.WithContext(ctx)
-	g.SetLimit(10) // Limit concurrent prefix processing
-
-	// First, get top-level prefixes to enable parallel processing
-	// And process each prefix in parallel
-	var processedPrefixes int
-	for prefix, err := range l.client.TopLevelPrefixes(ctx) {
-		// Handle errors during iteration immediately
-		if err != nil {
-			return xerrors.Errorf("failed to list top-level prefixes: %w", err)
-		}
-
-		g.Go(func() error {
-			return l.processPrefix(ctx, prefix, itemCh)
-		})
-		processedPrefixes++
-	}
-
-	// Wait for all prefix processing to complete
-	if err := g.Wait(); err != nil {
-		return xerrors.Errorf("error processing prefixes: %w", err)
-	}
-
-	l.logger.Info("GCS artifact listing completed", slog.Int("total", int(l.processed.Load())), slog.Int("prefixes", processedPrefixes))
-	return nil
-}
-
-// processPrefix processes a single prefix, listing all matching artifacts
-func (l *Lister) processPrefix(ctx context.Context, prefix string, itemCh chan<- string) error {
-	// Use the JARSHA1Files iterator from GCS
-	for item, err := range l.client.JARSHA1Files(ctx, prefix) {
-		// Handle errors during iteration immediately
-		if err != nil {
-			return xerrors.Errorf("error listing JAR SHA1 files for prefix %s: %w", prefix, err)
-		}
-
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		case itemCh <- item:
-			// Thread-safe increment using atomic
-			// NOTE: The return value 'processed'is just to preserve the current value for logging.
-			processed := l.processed.Add(1)
-
-			// Log every 100,000 processed items
-			if processed%100000 == 0 {
-				l.logger.Info(fmt.Sprintf("Listed %d artifacts", processed))
-			}
-		}
-	}
-	return nil
-}
-
-// Run starts the fetcher component which downloads SHA1 files
-func (f *Fetcher) Run(ctx context.Context, itemCh <-chan string, recordCh chan<- Record) error {
-	slog.Info("Starting fetcher workers", slog.Int("limit", f.limit))
-	// Create fetch worker pool with its own errgroup
-	fetchGroup, ctx := errgroup.WithContext(ctx)
-	fetchGroup.SetLimit(f.limit)
-
-	// Consume items from channel
-	for item := range itemCh {
-		fetchGroup.Go(func() error {
-			// Fetch SHA1 hash value
-			err := f.fetch(ctx, item, recordCh)
-			if err == nil || errors.Is(err, io.EOF) || errors.Is(err, context.Canceled) {
-				return nil // Normal completion or cancellation
-			}
-
-			// For other errors, log and exit if context cancelled
-			select {
-			case <-ctx.Done():
-				return ctx.Err()
-			default:
-				slog.Error("Fetcher error", slog.Any("error", err))
-				return err // Propagate error to errgroup
-			}
-		})
-	}
-	return fetchGroup.Wait()
-}
-
-func (f *Fetcher) fetch(ctx context.Context, item string, recordCh chan<- Record) error {
-	// Parse artifact coordinates
-	groupID, artifactID, version, classifier := parseItemName(item)
-	if groupID == "" || artifactID == "" {
-		return nil
-	}
-
-	// Skip if already processed
-	// NOTE: We only need to check if this GAV has been processed before,
-	// no need to store anything as the map is pre-populated
-	gavHash := hash.GAVC(groupID, artifactID, version, classifier)
-
-	if _, exists := f.storedGAVs[gavHash]; exists {
-		return nil
-	}
-
-	// Use the provided Maven client
-	sha1, err := f.client.FetchSHA1(ctx, item)
-	if sha1 == index.NotAvailable {
-		f.errCount.Add(1)
-	} else if err != nil {
-		f.logger.Warn("Failed to fetch SHA1", slog.String("item", item), slog.Any("error", err))
-		return nil
-	}
-
-	// Send record to next stage
-	select {
-	case <-ctx.Done():
-		return ctx.Err()
-	case recordCh <- Record{ // Record sent to channel
-		GroupID:    groupID,
-		ArtifactID: artifactID,
-		Version:    version,
-		Classifier: classifier,
-		SHA1:       sha1,
-	}:
-	}
-	return nil
-}
-
 // Run processes records and writes them to appropriate shard files
-func (a *Aggregator) Run(recordsCh <-chan Record) error {
+func (a *Aggregator) Run(recordsCh <-chan types.Record) error {
 	a.logger.Info("Starting record aggregator")
 
 	// Flush all writers and close all files when done
@@ -585,36 +432,4 @@ func digitsFor(n int) int {
 		return 2
 	}
 	return d
-}
-
-// parseItemName parses item name and returns groupID, artifactID, version and classifier
-func parseItemName(name string) (string, string, string, string) {
-	name = strings.TrimPrefix(name, "maven2/")
-	ss := strings.Split(name, "/")
-
-	// There are cases when name is incorrect (e.g. name doesn't have artifactID)
-	if len(ss) < 4 {
-		return "", "", "", ""
-	}
-	groupID := strings.Join(ss[:len(ss)-3], ".")
-	artifactID := ss[len(ss)-3]
-	version := ss[len(ss)-2]
-
-	// Parse the filename to extract classifier
-	// Example format:
-	// artifactID-version.jar.sha1 (no classifier)
-	// artifactID-version-classifier.jar.sha1 (with classifier)
-	filename := ss[len(ss)-1]
-	filenameBase := strings.TrimSuffix(filename, ".jar.sha1")
-
-	// Remove artifactID-version prefix
-	filenameBase = strings.TrimPrefix(filenameBase, artifactID+"-"+version)
-
-	// If the filename is empty, it means there is no classifier
-	var classifier string
-	if strings.HasPrefix(filenameBase, "-") {
-		classifier = strings.TrimPrefix(filenameBase, "-")
-	}
-
-	return groupID, artifactID, version, classifier
 }

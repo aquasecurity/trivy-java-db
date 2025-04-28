@@ -30,6 +30,7 @@ var (
 	indexDir   string
 	limit      int
 	shardCount int
+	sourceType string
 
 	rootCmd = &cobra.Command{
 		Use:   "trivy-java-db",
@@ -63,6 +64,7 @@ func init() {
 		"index repo dir")
 	rootCmd.PersistentFlags().IntVar(&limit, "limit", 300, "max parallelism")
 	crawlCmd.Flags().IntVar(&shardCount, "shards", 256, "number of shards")
+	crawlCmd.Flags().StringVar(&sourceType, "source", string(crawler.SourceTypeGCS), "source type (gcs, central)")
 
 	rootCmd.AddCommand(crawlCmd)
 	rootCmd.AddCommand(buildCmd)
@@ -72,10 +74,11 @@ func init() {
 
 func crawl(ctx context.Context) error {
 	c, err := crawler.NewCrawler(crawler.Option{
-		Limit:    limit,
-		Shard:    shardCount,
-		CacheDir: cacheDir,
-		IndexDir: filepath.Join(indexDir, "central"),
+		Limit:      limit,
+		Shard:      shardCount,
+		CacheDir:   cacheDir,
+		IndexDir:   filepath.Join(indexDir, "central"),
+		SourceType: crawler.SourceType(sourceType),
 	})
 	if err != nil {
 		return xerrors.Errorf("unable to create new Crawler: %w", err)

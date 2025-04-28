@@ -18,6 +18,7 @@ import (
 	"golang.org/x/xerrors"
 
 	"github.com/aquasecurity/trivy-java-db/pkg/crawler"
+	"github.com/aquasecurity/trivy-java-db/pkg/crawler/gcs"
 
 	_ "modernc.org/sqlite"
 )
@@ -78,7 +79,7 @@ func TestCrawl(t *testing.T) {
 			gts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				// GCS prefix API (for TopLevelPrefixes etc)
 				if delimiter := r.URL.Query().Get("delimiter"); delimiter != "" {
-					resp := crawler.GCSListResponse{
+					resp := gcs.ListResponse{
 						Prefixes: []string{
 							"maven2/abbot/",
 						},
@@ -121,7 +122,7 @@ func TestCrawl(t *testing.T) {
 			}
 
 			cl, err := crawler.NewCrawler(crawler.Option{
-				GcsURL:       gts.URL + "/",
+				BaseURL:      gts.URL + "/",
 				Limit:        tt.limit,
 				CacheDir:     tmpDir,
 				IndexDir:     filepath.Join(tmpDir, "maven-index"),
@@ -165,7 +166,7 @@ func writeSHA1(t *testing.T, w http.ResponseWriter, r *http.Request, fileNames m
 
 func writeGCSResponse(t *testing.T, w http.ResponseWriter, r *http.Request, sha1URLs []string, maxResults int) error {
 	t.Helper()
-	resp := crawler.GCSListResponse{}
+	resp := gcs.ListResponse{}
 	q := r.URL.Query()
 
 	pageToken := q.Get("pageToken")
@@ -178,8 +179,8 @@ func writeGCSResponse(t *testing.T, w http.ResponseWriter, r *http.Request, sha1
 		}
 
 		chunk := lo.Chunk(sha1URLs, maxResults)
-		resp.Items = lo.Map(chunk[token], func(url string, _ int) crawler.Item {
-			return crawler.Item{
+		resp.Items = lo.Map(chunk[token], func(url string, _ int) gcs.Item {
+			return gcs.Item{
 				Name: url,
 			}
 		})
