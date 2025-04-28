@@ -50,8 +50,8 @@ func NewGCS(client *retryablehttp.Client, baseURL string) *GCS {
 // Maven-specific methods
 
 // JARSHA1Files returns an iterator over JAR SHA1 files, filtering out certain types
-func (s *GCS) JARSHA1Files(ctx context.Context, prefix string) iter.Seq[string] {
-	return func(yield func(string) bool) {
+func (s *GCS) JARSHA1Files(ctx context.Context, prefix string) iter.Seq2[string, error] {
+	return func(yield func(string, error) bool) {
 		items := s.listItems(ctx, GCSRequestParams{
 			Prefix:     prefix,
 			MatchGlob:  "**/*.jar.sha1",
@@ -59,7 +59,7 @@ func (s *GCS) JARSHA1Files(ctx context.Context, prefix string) iter.Seq[string] 
 		})
 
 		// Wrap the items with filtering
-		for item := range items {
+		for item, err := range items {
 			// Don't process sources, test, javadocs, scaladoc files
 			if strings.HasSuffix(item, "sources.jar.sha1") ||
 				strings.HasSuffix(item, "test.jar.sha1") ||
@@ -69,7 +69,7 @@ func (s *GCS) JARSHA1Files(ctx context.Context, prefix string) iter.Seq[string] 
 				continue
 			}
 
-			if !yield(item) {
+			if !yield(item, err) {
 				return
 			}
 		}
@@ -77,7 +77,7 @@ func (s *GCS) JARSHA1Files(ctx context.Context, prefix string) iter.Seq[string] 
 }
 
 // TopLevelPrefixes returns an iterator over the top-level directory prefixes in Maven Central
-func (s *GCS) TopLevelPrefixes(ctx context.Context) iter.Seq[string] {
+func (s *GCS) TopLevelPrefixes(ctx context.Context) iter.Seq2[string, error] {
 	return s.listPrefixes(ctx, GCSRequestParams{
 		Prefix:     mavenPrefix,
 		Delimiter:  "/",
@@ -89,7 +89,7 @@ func (s *GCS) TopLevelPrefixes(ctx context.Context) iter.Seq[string] {
 func (s *GCS) FetchSHA1(ctx context.Context, itemName string) (string, error) {
 	data, err := s.getObject(ctx, itemName)
 	if err != nil {
-		return "", err
+		return "", xerrors.Errorf("failed to get object %s: %w", itemName, err)
 	}
 	data = bytes.TrimSpace(data)
 
@@ -149,7 +149,7 @@ func (s *GCS) getObject(ctx context.Context, objectPath string) ([]byte, error) 
 }
 
 // listItems is a function to list items with given parameters
-func (s *GCS) listItems(ctx context.Context, params GCSRequestParams) iter.Seq[string] {
+func (s *GCS) listItems(ctx context.Context, params GCSRequestParams) iter.Seq2[string, error] {
 	return s.listObjects(ctx, params, func(result GCSListResponse) []string {
 		return lo.Map(result.Items, func(item Item, _ int) string {
 			return item.Name
@@ -158,7 +158,7 @@ func (s *GCS) listItems(ctx context.Context, params GCSRequestParams) iter.Seq[s
 }
 
 // listPrefixes is a function to list prefixes with given parameters
-func (s *GCS) listPrefixes(ctx context.Context, params GCSRequestParams) iter.Seq[string] {
+func (s *GCS) listPrefixes(ctx context.Context, params GCSRequestParams) iter.Seq2[string, error] {
 	return s.listObjects(ctx, params, func(result GCSListResponse) []string {
 		return result.Prefixes
 	})
@@ -227,12 +227,13 @@ func (s *GCS) httpGet(ctx context.Context, url string) (*http.Response, error) {
 
 // listObjects is a generic function to list objects or prefixes from GCS
 // T is the type of elements to return (Item or string)
-func (s *GCS) listObjects(ctx context.Context, params GCSRequestParams, extractor func(GCSListResponse) []string) iter.Seq[string] {
-	return func(yield func(string) bool) {
+func (s *GCS) listObjects(ctx context.Context, params GCSRequestParams, extractor func(GCSListResponse) []string) iter.Seq2[string, error] {
+	return func(yield func(string, error) bool) {
 		// Prepare API URL and request
 		_, req, err := s.prepareListRequest(ctx, params)
 		if err != nil {
 			s.logger.Error("Failed to prepare storage request", slog.Any("error", err))
+			yield("", xerrors.Errorf("failed to prepare storage request: %w", err))
 			return
 		}
 
@@ -241,6 +242,9 @@ func (s *GCS) listObjects(ctx context.Context, params GCSRequestParams, extracto
 		for {
 			select {
 			case <-ctx.Done():
+				if ctx.Err() != nil {
+					yield("", ctx.Err())
+				}
 				return
 			default:
 				// Update page token for pagination
@@ -252,14 +256,13 @@ func (s *GCS) listObjects(ctx context.Context, params GCSRequestParams, extracto
 			// Make API call
 			result, err := s.list(ctx, req)
 			if err != nil {
-				logMsg := lo.Ternary(params.Delimiter != "", "Failed to list prefixes", "Failed to list objects")
-				s.logger.Error(logMsg, slog.String("prefix", params.Prefix), slog.Any("error", err))
+				yield("", xerrors.Errorf("listing objects: %w", err))
 				return
 			}
 
 			// Extract and yield each result using the provided extractor function
 			for _, item := range extractor(result) {
-				if !yield(item) {
+				if !yield(item, nil) {
 					return
 				}
 			}

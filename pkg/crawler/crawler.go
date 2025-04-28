@@ -97,6 +97,9 @@ type Option struct {
 }
 
 func NewCrawler(opt Option) (Crawler, error) {
+	if opt.Limit < 2 {
+		return Crawler{}, xerrors.Errorf("limit must be >= 2, got %d", opt.Limit)
+	}
 	client := retryablehttp.NewClient()
 	client.RetryMax = 10
 	if opt.WithoutRetry {
@@ -171,6 +174,9 @@ func (c *Crawler) crawlWithPipeline(ctx context.Context) error {
 	// resulting in very few actual fetch operations in the fetcher. This allows us to
 	// increase the parallelism of the listing process.
 	listerLimit := lo.Ternary(len(c.storedGAVs) > 1_000_000, c.limit*6/10, c.limit*2/10)
+	if listerLimit == 0 {
+		listerLimit = 1
+	}
 	fetcherLimit := c.limit - listerLimit
 
 	// Create component instances
@@ -342,7 +348,12 @@ func (l *Lister) Run(ctx context.Context, itemCh chan<- string) error {
 	// First, get top-level prefixes to enable parallel processing
 	// And process each prefix in parallel
 	var processedPrefixes int
-	for prefix := range l.client.TopLevelPrefixes(ctx) {
+	for prefix, err := range l.client.TopLevelPrefixes(ctx) {
+		// Handle errors during iteration immediately
+		if err != nil {
+			return xerrors.Errorf("failed to list top-level prefixes: %w", err)
+		}
+
 		g.Go(func() error {
 			return l.processPrefix(ctx, prefix, itemCh)
 		})
@@ -361,7 +372,12 @@ func (l *Lister) Run(ctx context.Context, itemCh chan<- string) error {
 // processPrefix processes a single prefix, listing all matching artifacts
 func (l *Lister) processPrefix(ctx context.Context, prefix string, itemCh chan<- string) error {
 	// Use the JARSHA1Files iterator from GCS
-	for item := range l.client.JARSHA1Files(ctx, prefix) {
+	for item, err := range l.client.JARSHA1Files(ctx, prefix) {
+		// Handle errors during iteration immediately
+		if err != nil {
+			return xerrors.Errorf("error listing JAR SHA1 files for prefix %s: %w", prefix, err)
+		}
+
 		select {
 		case <-ctx.Done():
 			return ctx.Err()

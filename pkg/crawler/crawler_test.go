@@ -2,7 +2,6 @@ package crawler_test
 
 import (
 	"context"
-	"encoding/hex"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -13,8 +12,6 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/aquasecurity/trivy-java-db/pkg/dbtest"
-	"github.com/aquasecurity/trivy-java-db/pkg/types"
 	"github.com/samber/lo"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -28,10 +25,10 @@ import (
 func TestCrawl(t *testing.T) {
 	tests := []struct {
 		name        string
-		limit       int64
+		limit       int
 		maxResults  int
+		withIndex   bool
 		fileNames   map[string]string
-		withDb      bool
 		gcsApiError bool
 		goldenPath  string
 		filePath    string
@@ -39,7 +36,7 @@ func TestCrawl(t *testing.T) {
 	}{
 		{
 			name:       "happy path",
-			limit:      1,
+			limit:      2,
 			maxResults: 3,
 			fileNames: map[string]string{
 				"maven2/abbot/abbot/0.12.3/abbot-0.12.3.jar.sha1":      "testdata/happy/abbot-0.12.3.jar.sha1",
@@ -48,13 +45,13 @@ func TestCrawl(t *testing.T) {
 				"maven2/abbot/abbot/1.4.0/abbot-1.4.0.jar.sha1":        "testdata/happy/abbot-1.4.0.jar.sha1",
 				"maven2/abbot/abbot/1.4.0/abbot-1.4.0-lite.jar.sha1":   "testdata/happy/abbot-1.4.0-lite.jar.sha1",
 			},
-			goldenPath: "testdata/happy/abbot.json.golden",
-			filePath:   "indexes/abbot/abbot.json",
+			goldenPath: "testdata/happy/abbot.tsv.golden",
+			filePath:   "maven-index/03.tsv",
 		},
 		{
-			name:       "happy path with DB",
-			withDb:     true,
-			limit:      1,
+			name:       "happy path with the existing index",
+			withIndex:  true,
+			limit:      2,
 			maxResults: 3,
 			fileNames: map[string]string{
 				"maven2/abbot/abbot/0.12.3/abbot-0.12.3.jar.sha1":      "testdata/happy/abbot-0.12.3.jar.sha1",
@@ -63,8 +60,8 @@ func TestCrawl(t *testing.T) {
 				"maven2/abbot/abbot/1.4.0/abbot-1.4.0.jar.sha1":        "testdata/happy/abbot-1.4.0.jar.sha1",
 				"maven2/abbot/abbot/1.4.0/abbot-1.4.0-lite.jar.sha1":   "testdata/happy/abbot-1.4.0-lite.jar.sha1",
 			},
-			goldenPath: "testdata/happy/abbot-with-db.json.golden",
-			filePath:   "indexes/abbot/abbot.json",
+			goldenPath: "testdata/happy/abbot-with-index.tsv.golden",
+			filePath:   "maven-index/03.tsv",
 		},
 		{
 			name:        "sad path. GCS API error",
@@ -79,8 +76,20 @@ func TestCrawl(t *testing.T) {
 			slices.Sort(sha1List)
 
 			gts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				// GCS prefix API (for TopLevelPrefixes etc)
+				if delimiter := r.URL.Query().Get("delimiter"); delimiter != "" {
+					resp := crawler.GCSListResponse{
+						Prefixes: []string{
+							"maven2/abbot/",
+						},
+					}
+					w.Header().Set("Content-Type", "application/json")
+					_ = json.NewEncoder(w).Encode(resp)
+					return
+				}
+
 				if strings.HasSuffix(r.URL.String(), ".jar.sha1") {
-					err := writeSha1(t, w, r, tt.fileNames)
+					err := writeSHA1(t, w, r, tt.fileNames)
 					require.NoError(t, err)
 					return
 				}
@@ -96,20 +105,27 @@ func TestCrawl(t *testing.T) {
 			defer gts.Close()
 
 			tmpDir := t.TempDir()
-			if tt.withDb {
-				dbc, err := dbtest.InitDB(t, []types.Index{
-					indexAbbot123,
-					indexAbbot130,
-				})
-				require.NoError(t, err)
 
-				tmpDir = filepath.Join(strings.TrimSuffix(dbc.Dir(), "db"))
+			// If withIndex is true, create an existing index file with intentionally different digest values.
+			// This is to verify that the record is skipped even if the digest does not match the actual value.
+			if tt.withIndex {
+				indexPath := filepath.Join(tmpDir, "maven-index/03.tsv")
+				if err := os.MkdirAll(filepath.Dir(indexPath), 0755); err != nil {
+					t.Fatalf("failed to create index dir: %v", err)
+				}
+				// The digest is intentionally set to all zeros to check that the record is skipped and not updated.
+				indexContent := "abbot\tabbot\t1.4.0\t-\t0000000000000000000000000000000000000000\nabbot\tabbot\t1.4.0\t1.4.0-lite\t0000000000000000000000000000000000000000\n"
+				if err := os.WriteFile(indexPath, []byte(indexContent), 0644); err != nil {
+					t.Fatalf("failed to write index file: %v", err)
+				}
 			}
 
 			cl, err := crawler.NewCrawler(crawler.Option{
 				GcsURL:       gts.URL + "/",
 				Limit:        tt.limit,
 				CacheDir:     tmpDir,
+				IndexDir:     filepath.Join(tmpDir, "maven-index"),
+				Shard:        4,
 				WithoutRetry: true,
 			})
 			require.NoError(t, err)
@@ -121,17 +137,21 @@ func TestCrawl(t *testing.T) {
 			}
 
 			got, err := os.ReadFile(filepath.Join(tmpDir, tt.filePath))
-			assert.NoError(t, err)
+			require.NoError(t, err)
 
 			want, err := os.ReadFile(tt.goldenPath)
 			assert.NoError(t, err)
 
-			assert.JSONEq(t, string(want), string(got))
+			gotLines := strings.Split(strings.TrimSpace(string(got)), "\n")
+			wantLines := strings.Split(strings.TrimSpace(string(want)), "\n")
+			slices.Sort(gotLines)
+			slices.Sort(wantLines)
+			assert.Equal(t, wantLines, gotLines)
 		})
 	}
 }
 
-func writeSha1(t *testing.T, w http.ResponseWriter, r *http.Request, fileNames map[string]string) error {
+func writeSHA1(t *testing.T, w http.ResponseWriter, r *http.Request, fileNames map[string]string) error {
 	t.Helper()
 	url := strings.TrimPrefix(r.URL.String(), "/maven-central/")
 	testFilePath, ok := fileNames[url]
@@ -143,7 +163,7 @@ func writeSha1(t *testing.T, w http.ResponseWriter, r *http.Request, fileNames m
 	return nil
 }
 
-func writeGCSResponse(t *testing.T, w http.ResponseWriter, r *http.Request, sha1Urls []string, maxResults int) error {
+func writeGCSResponse(t *testing.T, w http.ResponseWriter, r *http.Request, sha1URLs []string, maxResults int) error {
 	t.Helper()
 	resp := crawler.GCSListResponse{}
 	q := r.URL.Query()
@@ -157,50 +177,18 @@ func writeGCSResponse(t *testing.T, w http.ResponseWriter, r *http.Request, sha1
 			return err
 		}
 
-		for i := token * maxResults; i < token*maxResults+maxResults; i++ {
-			resp.Items = append(resp.Items, crawler.Item{
-				Name: sha1Urls[i],
-			})
-
-			if i == len(sha1Urls)-1 {
-				token = -1
+		chunk := lo.Chunk(sha1URLs, maxResults)
+		resp.Items = lo.Map(chunk[token], func(url string, _ int) crawler.Item {
+			return crawler.Item{
+				Name: url,
 			}
-		}
-		if token != -1 {
+		})
+
+		if token < len(chunk)-1 {
 			resp.NextPageToken = strconv.Itoa(token + 1)
 		}
 	}
 
-	jsonResp, err := json.Marshal(resp)
-	if err != nil {
-		return err
-	}
-
 	w.WriteHeader(http.StatusOK)
-	_, err = w.Write(jsonResp)
-	if err != nil {
-		return err
-	}
-
-	return nil
+	return json.NewEncoder(w).Encode(resp)
 }
-
-var (
-	abbot123Sha1b, _ = hex.DecodeString("51d28a27d919ce8690a40f4f335b9d591ceb16e9")
-	indexAbbot123    = types.Index{
-		GroupID:     "abbot",
-		ArtifactID:  "abbot",
-		Version:     "0.12.3",
-		SHA1:        abbot123Sha1b,
-		ArchiveType: types.JarType,
-	}
-
-	abbot130Sha1b, _ = hex.DecodeString("596d91e67631b0deb05fb685d8d1b6735f3e4f60")
-	indexAbbot130    = types.Index{
-		GroupID:     "abbot",
-		ArtifactID:  "abbot",
-		Version:     "0.13.0",
-		SHA1:        abbot130Sha1b,
-		ArchiveType: types.JarType,
-	}
-)
