@@ -55,6 +55,7 @@ const (
 // Crawler holds the state for Maven artifact crawling
 type Crawler struct {
 	dir        string
+	cacheDir   string
 	http       *retryablehttp.Client
 	baseURL    string
 	limit      int
@@ -120,6 +121,7 @@ func NewCrawler(opt Option) (Crawler, error) {
 
 	return Crawler{
 		dir:        opt.IndexDir,
+		cacheDir:   opt.CacheDir,
 		http:       client,
 		baseURL:    opt.BaseURL,
 		limit:      opt.Limit,
@@ -151,7 +153,11 @@ func (c *Crawler) Crawl(ctx context.Context) error {
 
 	case SourceTypeCentral:
 		// Create Central Index source
-		source = central.New(c.baseURL, c.storedGAVs)
+		var err error
+		source, err = central.New(c.http, c.baseURL, c.cacheDir, c.storedGAVs)
+		if err != nil {
+			return xerrors.Errorf("failed to create central index source: %w", err)
+		}
 	default:
 		return xerrors.Errorf("unsupported source type: %s", c.sourceType)
 	}
