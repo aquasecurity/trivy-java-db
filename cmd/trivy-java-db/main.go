@@ -107,10 +107,10 @@ func build() error {
 		}
 	}
 
-	indexDir := filepath.Join(indexDir, "central")
+	centralIndexDir := filepath.Join(indexDir, "central")
 	meta := db.NewMetadata(dbDir)
 	b := builder.NewBuilder(dbc, meta)
-	if err = b.Build(indexDir); err != nil {
+	if err = b.Build(centralIndexDir); err != nil {
 		return xerrors.Errorf("db build error: %w", err)
 	}
 	return nil
