@@ -135,10 +135,6 @@ func (s *GCS) getObject(ctx context.Context, objectPath string) ([]byte, error) 
 		return nil, nil // TODO: add special error
 	}
 
-	if resp.StatusCode == http.StatusNotFound {
-		return nil, xerrors.Errorf("object not found: %s", objectPath)
-	}
-
 	// Read the object content
 	data, err := io.ReadAll(resp.Body)
 	if err != nil {
