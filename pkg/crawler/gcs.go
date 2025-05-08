@@ -55,7 +55,7 @@ func (s *GCS) JARSHA1Files(ctx context.Context, prefix string) iter.Seq2[string,
 		items := s.listItems(ctx, GCSRequestParams{
 			Prefix:     prefix,
 			MatchGlob:  "**/*.jar.sha1",
-			MaxResults: 10000,
+			MaxResults: 5000, // 5,000 is the maximum allowed by GCS API
 		})
 
 		// Wrap the items with filtering
