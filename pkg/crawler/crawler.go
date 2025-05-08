@@ -383,6 +383,7 @@ func (l *Lister) processPrefix(ctx context.Context, prefix string, itemCh chan<-
 			return ctx.Err()
 		case itemCh <- item:
 			// Thread-safe increment using atomic
+			// NOTE: The return value 'processed'is just to preserve the current value for logging.
 			processed := l.processed.Add(1)
 
 			// Log every 100,000 processed items
