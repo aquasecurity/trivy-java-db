@@ -329,7 +329,7 @@ func (c *Crawler) loadExistingIndexes() error {
 	}
 
 	// Wait for all processing to complete
-	if err := g.Wait(); err != nil {
+	if err = g.Wait(); err != nil {
 		return xerrors.Errorf("error processing TSV files: %w", err)
 	}
 
