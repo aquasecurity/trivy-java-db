@@ -229,7 +229,7 @@ func (c *Crawler) crawlWithPipeline(ctx context.Context) error {
 
 	// Report results
 	slog.Info("Crawl pipeline completed", slog.Int("artifacts_processed", int(lister.processed.Load())),
-		slog.Int64("records_processed", aggregator.recordsProcessed), slog.Int("errors", int(fetcher.errCount.Load())))
+		slog.Int64("records_processed", aggregator.recordsProcessed), slog.Int("artifacts_missing_sha1", int(fetcher.errCount.Load())))
 
 	return nil
 }
