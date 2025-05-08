@@ -1,7 +1,6 @@
 package builder
 
 import (
-	"encoding/csv"
 	"encoding/hex"
 	"io"
 	"log/slog"
@@ -13,6 +12,7 @@ import (
 
 	"github.com/aquasecurity/trivy-java-db/pkg/db"
 	"github.com/aquasecurity/trivy-java-db/pkg/fileutil"
+	"github.com/aquasecurity/trivy-java-db/pkg/index"
 	"github.com/aquasecurity/trivy-java-db/pkg/types"
 	"github.com/cheggaaa/pb/v3"
 )
@@ -51,10 +51,7 @@ func (b *Builder) Build(indexDir string) error {
 		defer bar.Increment()
 
 		// Create a CSV reader for TSV format
-		reader := csv.NewReader(r)
-		reader.Comma = '\t' // Use tab as delimiter
-		reader.FieldsPerRecord = 5
-		reader.ReuseRecord = true // Reuse memory for performance
+		reader := index.NewReader(r)
 
 		var indexes, versionMismatchIndexes []types.Index
 
@@ -76,7 +73,7 @@ func (b *Builder) Build(indexDir string) error {
 			}
 
 			groupID, artifactID, versionDir, version, sha1str := record[0], record[1], record[2], record[3], record[4]
-			if sha1str == "N/A" {
+			if sha1str == index.NotAvailable {
 				continue // Skip records with no SHA1
 			}
 

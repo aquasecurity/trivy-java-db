@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"strings"
 
+	"github.com/aquasecurity/trivy-java-db/pkg/index"
 	"github.com/hashicorp/go-retryablehttp"
 	"github.com/samber/lo"
 	"golang.org/x/xerrors"
@@ -98,7 +99,7 @@ func (s *GCS) FetchSHA1(ctx context.Context, itemName string) (string, error) {
 	//    https://repo.maven.apache.org/maven2/org/wso2/msf4j/msf4j-swagger/2.5.2/msf4j-swagger-2.5.2.jar.sha1
 	//    https://repo.maven.apache.org/maven2/org/wso2/carbon/analytics/org.wso2.carbon.permissions.rest.api/2.0.248/org.wso2.carbon.permissions.rest.api-2.0.248.jar.sha1
 	if len(data) == 0 {
-		return "N/A", nil
+		return index.NotAvailable, nil
 	}
 
 	// Find a valid SHA1 hash in the content
@@ -115,7 +116,7 @@ func (s *GCS) FetchSHA1(ctx context.Context, itemName string) (string, error) {
 	}
 
 	// Record wrong SHA1 digests so we can skip them in the future
-	return "N/A", nil
+	return index.NotAvailable, nil
 }
 
 // Internal methods

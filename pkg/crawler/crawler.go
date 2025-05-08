@@ -25,6 +25,7 @@ import (
 
 	"github.com/aquasecurity/trivy-java-db/pkg/fileutil"
 	"github.com/aquasecurity/trivy-java-db/pkg/hash"
+	"github.com/aquasecurity/trivy-java-db/pkg/index"
 )
 
 const (
@@ -267,17 +268,11 @@ func (c *Crawler) loadExistingIndexes() error {
 			// Track records in this file
 			var fileCount uint32
 
-			f, err := os.Open(path)
+			reader, err := index.Open(path)
 			if err != nil {
 				return xerrors.Errorf("open error: %w", err)
 			}
-			defer f.Close()
-
-			// Create a CSV reader for TSV format
-			reader := csv.NewReader(f)
-			reader.Comma = '\t' // Use tab as delimiter
-			reader.FieldsPerRecord = 5
-			reader.ReuseRecord = true // Reuse memory for performance
+			defer reader.Close()
 
 			// Process all records in this file
 			for {
@@ -441,7 +436,7 @@ func (f *Fetcher) fetch(ctx context.Context, item string, recordCh chan<- Record
 
 	// Use the provided Maven client
 	sha1, err := f.client.FetchSHA1(ctx, item)
-	if sha1 == "N/A" {
+	if sha1 == index.NotAvailable {
 		f.errCount.Add(1)
 	} else if err != nil {
 		f.logger.Warn("Failed to fetch SHA1", slog.String("item", item), slog.Any("error", err))
