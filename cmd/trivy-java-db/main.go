@@ -26,8 +26,10 @@ func main() {
 
 var (
 	// Used for flags.
-	cacheDir string
-	limit    int
+	cacheDir   string
+	indexDir   string
+	limit      int
+	shardCount int
 
 	rootCmd = &cobra.Command{
 		Use:   "trivy-java-db",
@@ -57,7 +59,10 @@ func init() {
 
 	rootCmd.PersistentFlags().StringVar(&cacheDir, "cache-dir", filepath.Join(userCacheDir, "trivy-java-db"),
 		"cache dir")
+	rootCmd.PersistentFlags().StringVar(&indexDir, "index-dir", filepath.Join(userCacheDir, "maven-index"),
+		"index repo dir")
 	rootCmd.PersistentFlags().IntVar(&limit, "limit", 300, "max parallelism")
+	crawlCmd.Flags().IntVar(&shardCount, "shards", 256, "number of shards")
 
 	rootCmd.AddCommand(crawlCmd)
 	rootCmd.AddCommand(buildCmd)
@@ -67,8 +72,10 @@ func init() {
 
 func crawl(ctx context.Context) error {
 	c, err := crawler.NewCrawler(crawler.Option{
-		Limit:    int64(limit),
+		Limit:    limit,
+		Shard:    shardCount,
 		CacheDir: cacheDir,
+		IndexDir: filepath.Join(indexDir, "central"),
 	})
 	if err != nil {
 		return xerrors.Errorf("unable to create new Crawler: %w", err)
@@ -82,19 +89,28 @@ func crawl(ctx context.Context) error {
 func build() error {
 	dbDir := db.Dir(cacheDir)
 	slog.Info("Database", slog.String("path", dbDir))
+
+	exist := db.Exists(dbDir)
+	if exist {
+		slog.Info("Updating the existing database")
+	} else {
+		slog.Info("Creating a new database")
+	}
+
 	dbc, err := db.New(dbDir)
 	if err != nil {
 		return xerrors.Errorf("db create error: %w", err)
 	}
-	if !db.Exists(dbDir) {
+	if !exist {
 		if err = dbc.Init(); err != nil {
 			return xerrors.Errorf("db init error: %w", err)
 		}
 	}
 
+	centralIndexDir := filepath.Join(indexDir, "central")
 	meta := db.NewMetadata(dbDir)
 	b := builder.NewBuilder(dbc, meta)
-	if err = b.Build(cacheDir); err != nil {
+	if err = b.Build(centralIndexDir); err != nil {
 		return xerrors.Errorf("db build error: %w", err)
 	}
 	return nil
