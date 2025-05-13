@@ -37,7 +37,7 @@ type Record struct {
 	GroupID    string
 	ArtifactID string
 	Version    string
-	VersionDir string
+	Classifier string // e.g. "lite", "cuda10-1"
 	SHA1       string
 }
 
@@ -300,10 +300,13 @@ func (c *Crawler) loadExistingIndexes() error {
 					continue // Skip invalid records
 				}
 
-				groupID, artifactID, versionDir := record[0], record[1], record[2]
+				groupID, artifactID, version, classifier := record[0], record[1], record[2], record[3]
+				if classifier == "-" {
+					classifier = ""
+				}
 
-				// Hash GAV and add to map
-				gavHash := hash.GAV(groupID, artifactID, versionDir)
+				gavHash := hash.GAVC(groupID, artifactID, version, classifier)
+
 				c.mutex.Lock()
 				c.storedGAVs[gavHash] = struct{}{}
 				c.mutex.Unlock()
@@ -421,7 +424,7 @@ func (f *Fetcher) Run(ctx context.Context, itemCh <-chan string, recordCh chan<-
 
 func (f *Fetcher) fetch(ctx context.Context, item string, recordCh chan<- Record) error {
 	// Parse artifact coordinates
-	groupID, artifactID, versionDir, version := parseItemName(item)
+	groupID, artifactID, version, classifier := parseItemName(item)
 	if groupID == "" || artifactID == "" {
 		return nil
 	}
@@ -429,7 +432,8 @@ func (f *Fetcher) fetch(ctx context.Context, item string, recordCh chan<- Record
 	// Skip if already processed
 	// NOTE: We only need to check if this GAV has been processed before,
 	// no need to store anything as the map is pre-populated
-	gavHash := hash.GAV(groupID, artifactID, versionDir)
+	gavHash := hash.GAVC(groupID, artifactID, version, classifier)
+
 	if _, exists := f.storedGAVs[gavHash]; exists {
 		return nil
 	}
@@ -450,8 +454,8 @@ func (f *Fetcher) fetch(ctx context.Context, item string, recordCh chan<- Record
 	case recordCh <- Record{ // Record sent to channel
 		GroupID:    groupID,
 		ArtifactID: artifactID,
-		VersionDir: versionDir,
 		Version:    version,
+		Classifier: classifier,
 		SHA1:       sha1,
 	}:
 	}
@@ -478,17 +482,12 @@ func (a *Aggregator) Run(recordsCh <-chan Record) error {
 			return xerrors.Errorf("failed to get writer: %w", err)
 		}
 
-		// Since versionDir is the same as version in most cases, we can exclude it from the record for saving space.
-		if rec.VersionDir == rec.Version {
-			rec.Version = "-"
-		}
-
 		// Write TSV record: GroupID, ArtifactID, Version, SHA1
 		err = writer.Write([]string{
 			rec.GroupID,
 			rec.ArtifactID,
-			rec.VersionDir,
 			rec.Version,
+			rec.Classifier,
 			rec.SHA1,
 		})
 		if err != nil {
@@ -591,7 +590,7 @@ func digitsFor(n int) int {
 	return d
 }
 
-// parseItemName parses item name and returns groupID, artifactID, versionDir and version
+// parseItemName parses item name and returns groupID, artifactID, version and classifier
 func parseItemName(name string) (string, string, string, string) {
 	name = strings.TrimPrefix(name, "maven2/")
 	ss := strings.Split(name, "/")
@@ -602,13 +601,25 @@ func parseItemName(name string) (string, string, string, string) {
 	}
 	groupID := strings.Join(ss[:len(ss)-3], ".")
 	artifactID := ss[len(ss)-3]
-	versionDir := ss[len(ss)-2]
+	version := ss[len(ss)-2]
 
-	// Take version from filename as they are not always the same as in versionDir.
-	// e.g.
-	//   https://repo.maven.apache.org/maven2/ai/rapids/cudf/0.14/cudf-0.14.jar.sha1
-	//   https://repo.maven.apache.org/maven2/ai/rapids/cudf/0.14/cudf-0.14-cuda10-1.jar.sha1
-	version := strings.TrimSuffix(strings.TrimPrefix(ss[len(ss)-1], artifactID+"-"), ".jar.sha1")
+	// Parse the filename to extract classifier
+	// Example format:
+	// artifactID-version.jar.sha1 (no classifier)
+	// artifactID-version-classifier.jar.sha1 (with classifier)
+	filename := ss[len(ss)-1]
+	filenameBase := strings.TrimSuffix(filename, ".jar.sha1")
 
-	return groupID, artifactID, versionDir, version
+	// Remove artifactID-version prefix
+	if strings.HasPrefix(filenameBase, artifactID+"-"+version+"-") {
+		filenameBase = strings.TrimPrefix(filenameBase, artifactID+"-"+version)
+	}
+
+	// If the filename is empty, it means there is no classifier
+	var classifier string
+	if strings.HasPrefix(filenameBase, "-") {
+		classifier = strings.TrimPrefix(filenameBase, "-")
+	}
+
+	return groupID, artifactID, version, classifier
 }

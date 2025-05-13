@@ -53,7 +53,7 @@ func (b *Builder) Build(indexDir string) error {
 		// Create a CSV reader for TSV format
 		reader := index.NewReader(r)
 
-		var indexes, versionMismatchIndexes []types.Index
+		var indexes, classifierIndexes []types.Index
 
 		// Process all records in this file
 		for {
@@ -72,7 +72,7 @@ func (b *Builder) Build(indexDir string) error {
 				continue // Skip invalid records
 			}
 
-			groupID, artifactID, versionDir, version, sha1str := record[0], record[1], record[2], record[3], record[4]
+			groupID, artifactID, version, classifier, sha1str := record[0], record[1], record[2], record[3], record[4]
 			if sha1str == index.NotAvailable {
 				continue // Skip records with no SHA1
 			}
@@ -87,25 +87,25 @@ func (b *Builder) Build(indexDir string) error {
 				GroupID:     groupID,
 				ArtifactID:  artifactID,
 				Version:     version,
+				Classifier:  classifier,
 				SHA1:        sha1,
 				ArchiveType: types.JarType, // Always JAR for now
 			}
 
-			if index.Version == "-" {
-				// The version in the file name is the same as the version directory.
+			if index.Classifier == "" {
+				// Empty classifier
 				// e.g.  https://repo.maven.apache.org/maven2/ai/rapids/cudf/0.14/cudf-0.14.jar.sha1
-				index.Version = versionDir // Use "-" for disk space efficiency when the version in a file name is the same as the version directory
 				indexes = append(indexes, index)
 			} else {
-				// The version in the file name can be different from the version in the path.
-				// e.g. https://repo.maven.apache.org/maven2/ai/rapids/cudf/0.14/cudf-0.14-cuda10-1.jar.sha1 (0.14 vs 0.14-cuda10-1)
-				versionMismatchIndexes = append(versionMismatchIndexes, index)
+				// Non-empty classifier
+				// e.g. https://repo.maven.apache.org/maven2/ai/rapids/cudf/0.14/cudf-0.14-cuda10-1.jar.sha1 (cuda10-1 is classifier)
+				classifierIndexes = append(classifierIndexes, index)
 			}
 		}
 
-		// Insert indexes with version match first, and then with version mismatch so they will not override the indexes with version match.
-		// The version mismatch indexes might be rejected by the unique constraint on sha1.
-		indexes = append(indexes, versionMismatchIndexes...)
+		// Insert indexes without classifier first, and then with classifier so they will not override the indexes with classifier.
+		// The classifier indexes might be rejected by the unique constraint on sha1.
+		indexes = append(indexes, classifierIndexes...)
 		if err := b.db.InsertIndexes(indexes); err != nil {
 			return xerrors.Errorf("failed to insert index to db: %w", err)
 		}

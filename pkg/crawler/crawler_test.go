@@ -114,7 +114,7 @@ func TestCrawl(t *testing.T) {
 					t.Fatalf("failed to create index dir: %v", err)
 				}
 				// The digest is intentionally set to all zeros to check that the record is skipped and not updated.
-				indexContent := "abbot\tabbot\t1.4.0\t-\t0000000000000000000000000000000000000000\nabbot\tabbot\t1.4.0\t1.4.0-lite\t0000000000000000000000000000000000000000\n"
+				indexContent := "abbot\tabbot\t1.4.0\t\t0000000000000000000000000000000000000000\nabbot\tabbot\t1.4.0\tlite\t0000000000000000000000000000000000000000\n"
 				if err := os.WriteFile(indexPath, []byte(indexContent), 0644); err != nil {
 					t.Fatalf("failed to write index file: %v", err)
 				}
