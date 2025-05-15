@@ -12,6 +12,7 @@ import (
 	"os"
 	"path"
 	"path/filepath"
+	"strings"
 
 	"github.com/elireisman/maven-index-reader-go/pkg/config"
 	"github.com/elireisman/maven-index-reader-go/pkg/data"
@@ -29,13 +30,13 @@ const defaultURL = "https://repo.maven.apache.org/maven2/.index/nexus-maven-repo
 
 // Source implements the crawler.Source interface for Maven Central Index
 type Source struct {
-	indexPath  string
-	url        string
-	httpClient *retryablehttp.Client
-	logger     *slog.Logger
-	storedGAVs map[uint64]struct{}
-	processed  int
-	errCount   int
+	indexPath   string
+	url         string
+	httpClient  *retryablehttp.Client
+	logger      *slog.Logger
+	storedGAVCs map[uint64]struct{} // GroupID, ArtifactID, Version, Classifier
+	processed   int
+	errCount    int
 }
 
 // New creates a new Maven Central Index source
@@ -53,11 +54,11 @@ func New(httpClient *retryablehttp.Client, url string, cacheDir string, storedGA
 	}
 
 	return &Source{
-		indexPath:  filepath.Join(centralCacheDir, fileName),
-		url:        targetURL,
-		httpClient: httpClient,
-		logger:     slog.Default().With(slog.String("source", "central")),
-		storedGAVs: storedGAVs,
+		indexPath:   filepath.Join(centralCacheDir, fileName),
+		url:         targetURL,
+		httpClient:  httpClient,
+		logger:      slog.Default().With(slog.String("source", "central")),
+		storedGAVCs: storedGAVs,
 	}, nil
 }
 
@@ -158,57 +159,43 @@ func (s *Source) Read(ctx context.Context, recordCh chan<- types.Record) error {
 			return err
 		}
 
-		if record.Type() != data.ArtifactAdd {
+		if record.Type() != data.ArtifactAdd || record.Get("fileExtension") != "jar" {
 			continue
 		}
 
-		if record.Get("classifier") != nil {
-			continue
+		rec := types.Record{
+			GroupID:    mustGet[string](record, "groupId"),
+			ArtifactID: mustGet[string](record, "artifactId"),
+			Version:    mustGet[string](record, "version"),
+			Classifier: mustGet[string](record, "classifier"),
+			SHA1:       mustGet[string](record, "sha1"),
 		}
 
-		if record.Get("packaging") != "jar" || record.Get("fileExtension") != "jar" {
+		if rec.GroupID == "" || rec.ArtifactID == "" || rec.Version == "" {
 			continue
-		}
-
-		groupID, ok := record.Get("groupId").(string)
-		if !ok {
-			continue
-		}
-
-		artifactID, ok := record.Get("artifactId").(string)
-		if !ok {
-			continue
-		}
-
-		versionDir, ok := record.Get("version").(string)
-		if !ok {
-			continue
-		}
-
-		sha1, ok := record.Get("sha1").(string)
-		if !ok {
-			continue
-		}
-
-		if groupID == "" || artifactID == "" || versionDir == "" || sha1 == "" {
+		} else if rec.SHA1 == "" {
 			s.errCount++
 			continue
 		}
 
-		// Skip if already processed
-		gavHash := hash.GAV(groupID, artifactID, versionDir)
-		if _, exists := s.storedGAVs[gavHash]; exists {
+		// e.g. tests-javadoc, test-fixtures, source-release, debug-sources, etc.
+		if strings.HasPrefix(rec.Classifier, "source") || strings.HasPrefix(rec.Classifier, "test") || strings.HasPrefix(rec.Classifier, "debug") ||
+			strings.HasPrefix(rec.Classifier, "javadoc") || strings.HasSuffix(rec.Classifier, "javadoc") {
 			continue
 		}
-		s.storedGAVs[gavHash] = struct{}{}
-
-		recordCh <- types.Record{
-			GroupID:    groupID,
-			ArtifactID: artifactID,
-			VersionDir: versionDir,
-			Version:    "-", // Assume that version is the same as versionDir in Central Index
-			SHA1:       sha1,
+		switch rec.Classifier {
+		case "metadata", "src", "schemas", "config", "properties", "docs", "readme", "changelog", "cyclonedx", "kdoc":
+			continue
 		}
+
+		// Skip if already processed
+		gavHash := hash.GAVC(rec.GroupID, rec.ArtifactID, rec.Version, rec.Classifier)
+		if _, exists := s.storedGAVCs[gavHash]; exists {
+			continue
+		}
+		s.storedGAVCs[gavHash] = struct{}{}
+
+		recordCh <- rec
 		s.processed++
 		if s.processed%100000 == 0 {
 			s.logger.Info(fmt.Sprintf("Parsed %d records", s.processed))
@@ -222,4 +209,9 @@ func (s *Source) Processed() int {
 
 func (s *Source) Failed() int {
 	return s.errCount
+}
+
+func mustGet[T any](record data.Record, key string) T {
+	v, _ := record.Get(key).(T)
+	return v
 }

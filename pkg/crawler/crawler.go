@@ -64,10 +64,10 @@ type Crawler struct {
 
 	// Fields related to sharding
 	shardCount int
-	// storedGAVs is a map of stored GAV hashes to prevent duplicate processing.
+	// storedGAVCs is a map of stored GAVC (GroupID, ArtifactID, Version, Classifier) hashes to prevent duplicate processing.
 	// We use a regular map with mutex instead of sync.Map to avoid unnecessary sync.Map -> map conversion
 	// when passing to fetcher as read-only.
-	storedGAVs map[uint64]struct{}
+	storedGAVCs map[uint64]struct{}
 	// mutex protects access to storedGAVs during concurrent loading
 	mutex sync.Mutex
 }
@@ -121,15 +121,15 @@ func NewCrawler(opt Option) (Crawler, error) {
 	slog.Info("Sharding", slog.Int("count", opt.Shard))
 
 	return Crawler{
-		dir:        opt.IndexDir,
-		cacheDir:   opt.CacheDir,
-		http:       client,
-		baseURL:    opt.BaseURL,
-		limit:      opt.Limit,
-		shardCount: opt.Shard,
-		storedGAVs: make(map[uint64]struct{}),
-		mutex:      sync.Mutex{},
-		sourceType: cmp.Or(opt.SourceType, SourceTypeGCS), // Default to GCS if not specified
+		dir:         opt.IndexDir,
+		cacheDir:    opt.CacheDir,
+		http:        client,
+		baseURL:     opt.BaseURL,
+		limit:       opt.Limit,
+		shardCount:  opt.Shard,
+		storedGAVCs: make(map[uint64]struct{}),
+		mutex:       sync.Mutex{},
+		sourceType:  cmp.Or(opt.SourceType, SourceTypeGCS), // Default to GCS if not specified
 	}, nil
 }
 
@@ -149,13 +149,13 @@ func (c *Crawler) Crawl(ctx context.Context) error {
 		source = gcs.New(c.http, gcs.Options{
 			BaseURL:    c.baseURL,
 			Limit:      c.limit,
-			StoredGAVs: c.storedGAVs,
+			StoredGAVs: c.storedGAVCs,
 		})
 
 	case SourceTypeCentral:
 		// Create Central Index source
 		var err error
-		source, err = central.New(c.http, c.baseURL, c.cacheDir, c.storedGAVs)
+		source, err = central.New(c.http, c.baseURL, c.cacheDir, c.storedGAVCs)
 		if err != nil {
 			return xerrors.Errorf("failed to create central index source: %w", err)
 		}
@@ -285,7 +285,7 @@ func (c *Crawler) loadExistingIndexes() error {
 				gavHash := hash.GAVC(groupID, artifactID, version, classifier)
 
 				c.mutex.Lock()
-				c.storedGAVs[gavHash] = struct{}{}
+				c.storedGAVCs[gavHash] = struct{}{}
 				c.mutex.Unlock()
 
 				fileCount++
@@ -332,7 +332,7 @@ func (a *Aggregator) Run(recordsCh <-chan types.Record) error {
 			return xerrors.Errorf("failed to get writer: %w", err)
 		}
 
-		// Write TSV record: GroupID, ArtifactID, Version, SHA1
+		// Write TSV record: GroupID, ArtifactID, Version, Classifier, SHA1
 		err = writer.Write([]string{
 			rec.GroupID,
 			rec.ArtifactID,
