@@ -82,7 +82,7 @@ func (s *GCS) TopLevelPrefixes(ctx context.Context) iter.Seq2[string, error] {
 	return s.listPrefixes(ctx, GCSRequestParams{
 		Prefix:     mavenPrefix,
 		Delimiter:  "/",
-		MaxResults: 10000,
+		MaxResults: 5000, // 5,000 is the maximum allowed by GCS API
 	})
 }
 
