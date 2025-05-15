@@ -3,6 +3,7 @@ package central
 import (
 	"cmp"
 	"context"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
@@ -173,7 +174,10 @@ func (s *Source) Read(ctx context.Context, recordCh chan<- types.Record) error {
 
 		if rec.GroupID == "" || rec.ArtifactID == "" || rec.Version == "" {
 			continue
-		} else if rec.SHA1 == "" {
+		}
+
+		// Validate the SHA1 hash
+		if _, err := hex.DecodeString(rec.SHA1); err != nil || len(rec.SHA1) != 40 {
 			s.errCount++
 			continue
 		}
