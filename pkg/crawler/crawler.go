@@ -1,17 +1,18 @@
 package crawler
 
 import (
-	"bytes"
 	"context"
-	"encoding/hex"
-	"encoding/json"
+	"encoding/csv"
+	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"log/slog"
-	"math/rand"
+	"math"
 	"net/http"
+	"os"
 	"path/filepath"
-	"slices"
+	"runtime"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -19,41 +20,87 @@ import (
 
 	"github.com/hashicorp/go-retryablehttp"
 	"github.com/samber/lo"
-	"golang.org/x/sync/semaphore"
+	"golang.org/x/sync/errgroup"
 	"golang.org/x/xerrors"
 
-	"github.com/aquasecurity/trivy-java-db/pkg/db"
 	"github.com/aquasecurity/trivy-java-db/pkg/fileutil"
-	"github.com/aquasecurity/trivy-java-db/pkg/types"
+	"github.com/aquasecurity/trivy-java-db/pkg/hash"
+	"github.com/aquasecurity/trivy-java-db/pkg/index"
 )
 
 const (
 	gcsURL = "https://storage.googleapis.com/"
 )
 
+// Record represents a Maven artifact index with SHA1 hash
+type Record struct {
+	GroupID    string
+	ArtifactID string
+	Version    string
+	Classifier string // e.g. "lite", "cuda10-1"
+	SHA1       string
+}
+
+// Lister handles listing artifact names from GCS
+type Lister struct {
+	client    *GCS
+	gcsURL    string
+	processed atomic.Uint32
+	limit     int
+	logger    *slog.Logger
+}
+
+// Fetcher fetches SHA1 hash values for artifacts
+type Fetcher struct {
+	client     *GCS
+	gcrURL     string
+	logger     *slog.Logger
+	limit      int
+	storedGAVs map[uint64]struct{} // Pre-populated map of GAVs, used as read-only in fetcher
+	errCount   atomic.Uint32
+}
+
+// Aggregator writes records to shard files
+type Aggregator struct {
+	baseDir          string
+	shardCount       int
+	outFiles         map[int]*os.File
+	outWriters       map[int]*csv.Writer
+	recordsProcessed int64
+	logger           *slog.Logger
+}
+
+// Crawler holds the state for Maven artifact crawling
 type Crawler struct {
 	dir  string
 	http *retryablehttp.Client
-	dbc  *db.DB
 
-	gcrURL string
+	gcsURL string
+	limit  int
 
-	wg              sync.WaitGroup
-	limit           *semaphore.Weighted
-	itemCh          chan string
-	wrongSHA1Values []string
-
-	count int64
+	// Fields related to sharding
+	shardCount int
+	// storedGAVs is a map of stored GAV hashes to prevent duplicate processing.
+	// We use a regular map with mutex instead of sync.Map to avoid unnecessary sync.Map -> map conversion
+	// when passing to fetcher as read-only.
+	storedGAVs map[uint64]struct{}
+	// mutex protects access to storedGAVs during concurrent loading
+	mutex sync.Mutex
 }
 
 type Option struct {
-	Limit        int64
-	GcsUrl       string
+	Shard        int
+	Limit        int
+	GcsURL       string
 	CacheDir     string
+	IndexDir     string
 	WithoutRetry bool
 }
 
 func NewCrawler(opt Option) (Crawler, error) {
+	if opt.Limit < 2 {
+		return Crawler{}, xerrors.Errorf("limit must be >= 2, got %d", opt.Limit)
+	}
 	client := retryablehttp.NewClient()
 	client.RetryMax = 10
 	if opt.WithoutRetry {
@@ -82,334 +129,465 @@ func NewCrawler(opt Option) (Crawler, error) {
 		return resp, xerrors.Errorf("HTTP request failed after retries: %w", err)
 	}
 
-	if opt.GcsUrl == "" {
-		opt.GcsUrl = gcsURL
+	if opt.GcsURL == "" {
+		opt.GcsURL = gcsURL
 	}
 
-	indexDir := filepath.Join(opt.CacheDir, "indexes")
-	slog.Info("Index dir", slog.String("path", indexDir))
-
-	var dbc db.DB
-	dbDir := db.Dir(opt.CacheDir)
-	if db.Exists(dbDir) {
-		var err error
-		dbc, err = db.New(dbDir)
-		if err != nil {
-			return Crawler{}, xerrors.Errorf("unable to open DB: %w", err)
-		}
-		slog.Info("DB is used for crawler", slog.String("path", opt.CacheDir))
-	}
+	slog.Info("Index dir", slog.String("path", opt.IndexDir))
+	slog.Info("Sharding", slog.Int("count", opt.Shard))
 
 	return Crawler{
-		dir:    indexDir,
-		http:   client,
-		dbc:    &dbc,
-		itemCh: make(chan string),
-
-		gcrURL: opt.GcsUrl,
-		limit:  semaphore.NewWeighted(opt.Limit),
+		dir:        opt.IndexDir,
+		http:       client,
+		gcsURL:     opt.GcsURL,
+		limit:      opt.Limit,
+		shardCount: opt.Shard,
+		storedGAVs: make(map[uint64]struct{}),
+		mutex:      sync.Mutex{},
 	}, nil
 }
 
 func (c *Crawler) Crawl(ctx context.Context) error {
 	slog.Info("Crawl GCS and save indexes")
-	ctx, cancel := context.WithCancel(ctx)
-	defer cancel()
 
-	crawlDone := make(chan struct{})
-	errCh := make(chan error)
-	c.wg.Add(1)
-
-	go func() {
-		c.wg.Wait()
-		crawlDone <- struct{}{}
-	}()
-
-	go func() {
-		defer close(c.itemCh)
-		defer c.wg.Done()
-		err := c.crawlGCSItems(ctx)
-		if err != nil {
-			errCh <- err
-		}
-	}()
-
-	go func() {
-		c.wg.Add(1)
-		defer c.wg.Done()
-
-		err := c.parseItems(ctx)
-		if err != nil {
-			errCh <- err
-		}
-	}()
-
-loop:
-	for {
-		select {
-		case <-crawlDone:
-			break loop
-		case err := <-errCh:
-			return err
-		}
+	if err := c.loadExistingIndexes(); err != nil {
+		return xerrors.Errorf("failed to load existing indexes: %w", err)
 	}
 
-	slog.Info("Crawl completed")
-	if len(c.wrongSHA1Values) > 0 {
-		for _, wrongSHA1 := range c.wrongSHA1Values {
-			slog.Warn("Wrong SHA1 file", slog.String("error", wrongSHA1))
-		}
+	return c.crawlWithPipeline(ctx)
+}
+
+// crawlWithPipeline implements the crawling process using a data pipeline architecture:
+// Lister → Fetcher → Aggregator
+func (c *Crawler) crawlWithPipeline(ctx context.Context) error {
+	slog.Info("Starting Maven artifacts crawling pipeline")
+
+	// Create channels for the pipeline stages
+	itemCh := make(chan string, 1<<15)   // 32k buffer
+	recordCh := make(chan Record, 1<<16) // 65k buffer
+
+	// Create main error group for pipeline coordination
+	g, ctx := errgroup.WithContext(ctx)
+
+	gcs := NewGCS(c.http, c.gcsURL)
+
+	// When we have already processed GAVs, most GAVs will be skipped during SHA1 fetching,
+	// resulting in very few actual fetch operations in the fetcher. This allows us to
+	// increase the parallelism of the listing process.
+	listerLimit := lo.Ternary(len(c.storedGAVs) > 1_000_000, c.limit*6/10, c.limit*2/10)
+	if listerLimit == 0 {
+		listerLimit = 1
 	}
+	fetcherLimit := c.limit - listerLimit
+
+	// Create component instances
+	lister := &Lister{
+		client: gcs,
+		gcsURL: c.gcsURL,
+		limit:  listerLimit,
+		logger: slog.Default().With(slog.String("component", "lister")),
+	}
+
+	fetcher := &Fetcher{
+		client:     gcs,
+		gcrURL:     c.gcsURL,
+		limit:      fetcherLimit,
+		storedGAVs: c.storedGAVs, // Direct reference to the map as read-only
+		logger:     slog.Default().With(slog.String("component", "fetcher")),
+	}
+
+	aggregator := &Aggregator{
+		baseDir:    c.dir,
+		shardCount: c.shardCount,
+		outFiles:   make(map[int]*os.File, c.shardCount),
+		outWriters: make(map[int]*csv.Writer, c.shardCount),
+		logger:     slog.Default().With(slog.String("component", "aggregator")),
+	}
+
+	// Stage 1 (Lister): Get all item names suffixing with .jar.sha1 from GCS
+	g.Go(func() error {
+		defer close(itemCh) // Close item channel when lister is done
+		return lister.Run(ctx, itemCh)
+	})
+
+	// Stage 2 (Fetcher): Start fetcher workers to fetch SHA1 hash values
+	g.Go(func() error {
+		defer close(recordCh) // Close records channel when all fetchers are done
+		return fetcher.Run(ctx, itemCh, recordCh)
+	})
+
+	// Stage 3 (Aggregator): Start aggregator worker to write records to shard files
+	g.Go(func() error {
+		return aggregator.Run(recordCh)
+	})
+
+	// Wait for the pipeline (lister, fetchers, aggregator) to complete
+	if err := g.Wait(); err != nil {
+		slog.Error("Pipeline error", slog.Any("error", err), slog.Int("artifacts_processed", int(lister.processed.Load())),
+			slog.Int64("records_processed", aggregator.recordsProcessed))
+		return xerrors.Errorf("pipeline error: %w", err)
+	}
+
+	// Report results
+	slog.Info("Crawl pipeline completed", slog.Int("artifacts_processed", int(lister.processed.Load())),
+		slog.Int64("records_processed", aggregator.recordsProcessed), slog.Int("artifacts_missing_sha1", int(fetcher.errCount.Load())))
+
 	return nil
 }
 
-func (c *Crawler) crawlGCSItems(ctx context.Context) error {
-	url := c.gcrURL + "storage/v1/b/maven-central/o/"
-	req, err := retryablehttp.NewRequestWithContext(ctx, http.MethodGet, url, nil)
-	if err != nil {
-		return xerrors.Errorf("unable to create a HTTP request: %w", err)
+// Load existing indexes
+func (c *Crawler) loadExistingIndexes() error {
+	if !fileutil.Exists(c.dir) {
+		return nil
 	}
 
-	query := req.URL.Query()
-	query.Set("prefix", "maven2/")
-	query.Set("matchGlob", "**/*.jar.sha1")
-	query.Set("maxResults", "5000")
-	req.URL.RawQuery = query.Encode()
+	slog.Info("Loading existing indexes from TSV files")
 
-	for {
-		r, err := c.fetchItems(ctx, req)
+	// Use atomic.Uint32 for counter
+	var count atomic.Uint32
+
+	// Create an error group to load indexes in parallel
+	g, ctx := errgroup.WithContext(context.Background())
+	g.SetLimit(runtime.NumCPU()) // Parallel loading based on CPU count
+
+	// Process TSV files using fileutil.Walk
+	err := filepath.WalkDir(c.dir, func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
-			return xerrors.Errorf("unable to get items: %w", err)
-		}
-		query.Set("pageToken", r.NextPageToken)
-		req.URL.RawQuery = query.Encode()
-		for _, item := range r.Items {
-			c.itemCh <- item.Name
+			return xerrors.Errorf("walk error: %w", err)
+		} else if d.IsDir() {
+			return nil
 		}
 
-		if r.NextPageToken == "" {
-			break
+		// Process only TSV files
+		if !strings.HasSuffix(path, ".tsv") {
+			return nil
 		}
 
-	}
+		// Create a goroutine for each file
+		g.Go(func() error {
+			// Track records in this file
+			var fileCount uint32
 
-	return nil
-}
-
-func (c *Crawler) fetchItems(ctx context.Context, req *retryablehttp.Request) (GcsApiResponse, error) {
-	resp, err := c.httpGet(ctx, req.URL.String())
-	if err != nil {
-		return GcsApiResponse{}, xerrors.Errorf("http error (%s): %w", req.URL.String(), err)
-	}
-	defer resp.Body.Close()
-
-	r := GcsApiResponse{}
-
-	err = json.NewDecoder(resp.Body).Decode(&r)
-	if err != nil {
-		return GcsApiResponse{}, xerrors.Errorf("unable to parse API response: %w", err)
-	}
-
-	return r, nil
-}
-
-func (c *Crawler) parseItems(ctx context.Context) error {
-	var prevGroupID, prevArtifactID string
-	itemsByVersionDir := map[string][]string{}
-	for itemName := range c.itemCh {
-		// Don't include sources, test, javadocs, scaladoc files
-		if strings.HasSuffix(itemName, "sources.jar.sha1") ||
-			strings.HasSuffix(itemName, "test.jar.sha1") || strings.HasSuffix(itemName, "tests.jar.sha1") ||
-			strings.HasSuffix(itemName, "javadoc.jar.sha1") || strings.HasSuffix(itemName, "scaladoc.jar.sha1") {
-			continue
-		}
-
-		groupID, artifactID, versionDir, _ := parseItemName(itemName)
-		if prevGroupID != groupID || prevArtifactID != artifactID {
-			if err := c.limit.Acquire(ctx, 1); err != nil {
-				return xerrors.Errorf("semaphore acquire error: %w", err)
+			reader, err := index.Open(path)
+			if err != nil {
+				return xerrors.Errorf("open error: %w", err)
 			}
-			go func(ctx context.Context, groupID, artifactID string, items map[string][]string) {
-				defer c.limit.Release(1)
-				defer c.wg.Done()
-				c.wg.Add(1)
-				err := c.crawlSHA1(ctx, groupID, artifactID, items)
-				if err != nil {
-					slog.Warn("crawlSHA1 failed", slog.String("error", err.Error()))
-					return
+			defer reader.Close()
+
+			// Process all records in this file
+			for {
+				select {
+				case <-ctx.Done():
+					return ctx.Err() // Handle cancellation
+				default:
 				}
-			}(ctx, prevGroupID, prevArtifactID, itemsByVersionDir)
 
-			// Index saved in crawlSHA1
-			// So we need to clear previous GAV
-			prevGroupID = groupID
-			prevArtifactID = artifactID
-			itemsByVersionDir = map[string][]string{}
-		}
+				// Read one record
+				record, err := reader.Read()
+				if err == io.EOF {
+					break
+				}
+				if err != nil {
+					// Log but continue on error
+					slog.Warn("Error reading TSV record",
+						slog.String("file", path),
+						slog.Any("error", err))
+					continue
+				}
 
-		itemsByVersionDir[versionDir] = append(itemsByVersionDir[versionDir], itemName)
-	}
+				// Need at least GroupID, ArtifactID, Version
+				if len(record) < 3 {
+					continue // Skip invalid records
+				}
 
-	// Save last artifact
-	err := c.crawlSHA1(ctx, prevGroupID, prevArtifactID, itemsByVersionDir)
+				groupID, artifactID, version, classifier := record[0], record[1], record[2], record[3]
+				if classifier == "-" {
+					classifier = ""
+				}
+
+				gavHash := hash.GAVC(groupID, artifactID, version, classifier)
+
+				c.mutex.Lock()
+				c.storedGAVs[gavHash] = struct{}{}
+				c.mutex.Unlock()
+
+				fileCount++
+			}
+
+			// Update the global counter
+			count.Add(fileCount)
+
+			return nil
+		})
+		return nil
+	})
+
 	if err != nil {
-		return xerrors.Errorf("unable to crawl SHA1: %w", err)
+		return xerrors.Errorf("error walking TSV files: %w", err)
 	}
 
+	// Wait for all processing to complete
+	if err = g.Wait(); err != nil {
+		return xerrors.Errorf("error processing TSV files: %w", err)
+	}
+
+	slog.Info("Loaded total records", slog.Int("count", int(count.Load())))
 	return nil
 }
 
-func (c *Crawler) crawlSHA1(ctx context.Context, groupID, artifactID string, dirs map[string][]string) error {
+// Run starts the lister component which lists artifacts from GCS
+func (l *Lister) Run(ctx context.Context, itemCh chan<- string) error {
+	l.logger.Info("Starting GCS artifact lister", slog.Int("limit", l.limit))
+
+	// Create worker pool for parallel processing of prefixes
+	g, ctx := errgroup.WithContext(ctx)
+	g.SetLimit(10) // Limit concurrent prefix processing
+
+	// First, get top-level prefixes to enable parallel processing
+	// And process each prefix in parallel
+	var processedPrefixes int
+	for prefix, err := range l.client.TopLevelPrefixes(ctx) {
+		// Handle errors during iteration immediately
+		if err != nil {
+			return xerrors.Errorf("failed to list top-level prefixes: %w", err)
+		}
+
+		g.Go(func() error {
+			return l.processPrefix(ctx, prefix, itemCh)
+		})
+		processedPrefixes++
+	}
+
+	// Wait for all prefix processing to complete
+	if err := g.Wait(); err != nil {
+		return xerrors.Errorf("error processing prefixes: %w", err)
+	}
+
+	l.logger.Info("GCS artifact listing completed", slog.Int("total", int(l.processed.Load())), slog.Int("prefixes", processedPrefixes))
+	return nil
+}
+
+// processPrefix processes a single prefix, listing all matching artifacts
+func (l *Lister) processPrefix(ctx context.Context, prefix string, itemCh chan<- string) error {
+	// Use the JARSHA1Files iterator from GCS
+	for item, err := range l.client.JARSHA1Files(ctx, prefix) {
+		// Handle errors during iteration immediately
+		if err != nil {
+			return xerrors.Errorf("error listing JAR SHA1 files for prefix %s: %w", prefix, err)
+		}
+
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case itemCh <- item:
+			// Thread-safe increment using atomic
+			// NOTE: The return value 'processed'is just to preserve the current value for logging.
+			processed := l.processed.Add(1)
+
+			// Log every 100,000 processed items
+			if processed%100000 == 0 {
+				l.logger.Info(fmt.Sprintf("Listed %d artifacts", processed))
+			}
+		}
+	}
+	return nil
+}
+
+// Run starts the fetcher component which downloads SHA1 files
+func (f *Fetcher) Run(ctx context.Context, itemCh <-chan string, recordCh chan<- Record) error {
+	slog.Info("Starting fetcher workers", slog.Int("limit", f.limit))
+	// Create fetch worker pool with its own errgroup
+	fetchGroup, ctx := errgroup.WithContext(ctx)
+	fetchGroup.SetLimit(f.limit)
+
+	// Consume items from channel
+	for item := range itemCh {
+		fetchGroup.Go(func() error {
+			// Fetch SHA1 hash value
+			err := f.fetch(ctx, item, recordCh)
+			if err == nil || errors.Is(err, io.EOF) || errors.Is(err, context.Canceled) {
+				return nil // Normal completion or cancellation
+			}
+
+			// For other errors, log and exit if context cancelled
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			default:
+				slog.Error("Fetcher error", slog.Any("error", err))
+				return err // Propagate error to errgroup
+			}
+		})
+	}
+	return fetchGroup.Wait()
+}
+
+func (f *Fetcher) fetch(ctx context.Context, item string, recordCh chan<- Record) error {
+	// Parse artifact coordinates
+	groupID, artifactID, version, classifier := parseItemName(item)
 	if groupID == "" || artifactID == "" {
 		return nil
 	}
 
-	atomic.AddInt64(&c.count, 1)
-	if c.count%1000 == 0 {
-		slog.Info(fmt.Sprintf("Crawled %d artifacts", atomic.LoadInt64(&c.count)))
-	}
+	// Skip if already processed
+	// NOTE: We only need to check if this GAV has been processed before,
+	// no need to store anything as the map is pre-populated
+	gavHash := hash.GAVC(groupID, artifactID, version, classifier)
 
-	var foundVersions []types.Version
-	// Get versions from the DB (if exists) to reduce the number of requests to the server
-	savedVersion, err := c.versionsFromDB(groupID, artifactID)
-	if err != nil {
-		return xerrors.Errorf("unable to get list of versions from DB: %w", err)
-	}
-	// Check each version dir to find links to `*.jar.sha1` files.
-	for dirVersion, itemNames := range dirs {
-		var dirVersionSha1 []byte
-		var versions []types.Version
-
-		for _, itemName := range itemNames {
-			_, _, _, ver := parseItemName(itemName)
-			sha1, ok := savedVersion[ver]
-			if !ok {
-				sha1, err = c.fetchSHA1(ctx, itemName)
-				if err != nil {
-					return xerrors.Errorf("unable to fetch sha1: %s", err)
-				}
-			}
-			// Save sha1 for the file where the version is equal to the version from the directory name in order to remove duplicates later
-			// Avoid overwriting dirVersion when inserting versions into the database (sha1 is uniq blob)
-			// e.g. `cudf-0.14-cuda10-1.jar.sha1` should not overwrite `cudf-0.14.jar.sha1`
-			// https://repo.maven.apache.org/maven2/ai/rapids/cudf/0.14/
-			if ver == dirVersion {
-				dirVersionSha1 = sha1
-			} else {
-				versions = append(versions, types.Version{
-					Version: ver,
-					SHA1:    sha1,
-				})
-			}
-		}
-		// Remove duplicates of dirVersionSha1
-		versions = lo.Filter(versions, func(v types.Version, _ int) bool {
-			return !bytes.Equal(v.SHA1, dirVersionSha1)
-		})
-
-		if dirVersionSha1 != nil {
-			versions = append(versions, types.Version{
-				Version: dirVersion,
-				SHA1:    dirVersionSha1,
-			})
-		}
-
-		versions = lo.Filter(versions, func(v types.Version, _ int) bool {
-			_, ok := savedVersion[v.Version]
-			return !ok
-		})
-
-		foundVersions = append(foundVersions, versions...)
-	}
-
-	if len(foundVersions) == 0 {
+	if _, exists := f.storedGAVs[gavHash]; exists {
 		return nil
 	}
 
-	slices.SortFunc(foundVersions, func(a, b types.Version) int {
-		return strings.Compare(a.Version, b.Version)
-	})
-
-	index := &Index{
-		GroupID:     groupID,
-		ArtifactID:  artifactID,
-		Versions:    foundVersions,
-		ArchiveType: types.JarType,
+	// Use the provided Maven client
+	sha1, err := f.client.FetchSHA1(ctx, item)
+	if sha1 == index.NotAvailable {
+		f.errCount.Add(1)
+	} else if err != nil {
+		f.logger.Warn("Failed to fetch SHA1", slog.String("item", item), slog.Any("error", err))
+		return nil
 	}
-	fileName := fmt.Sprintf("%s.json", index.ArtifactID)
-	filePath := filepath.Join(c.dir, index.GroupID, fileName)
-	if err = fileutil.WriteJSON(filePath, index); err != nil {
-		return xerrors.Errorf("json write error: %w", err)
+
+	// Send record to next stage
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case recordCh <- Record{ // Record sent to channel
+		GroupID:    groupID,
+		ArtifactID: artifactID,
+		Version:    version,
+		Classifier: classifier,
+		SHA1:       sha1,
+	}:
 	}
 	return nil
 }
 
-func (c *Crawler) fetchSHA1(ctx context.Context, itemName string) ([]byte, error) {
-	url := c.gcrURL + "maven-central/" + itemName
-	resp, err := c.httpGet(ctx, url)
-	if err != nil {
-		return nil, xerrors.Errorf("http get error: %w", err)
-	}
-	defer func() { _ = resp.Body.Close() }()
+// Run processes records and writes them to appropriate shard files
+func (a *Aggregator) Run(recordsCh <-chan Record) error {
+	a.logger.Info("Starting record aggregator")
 
-	// These are cases when version dir contains link to sha1 file
-	// But file doesn't exist
-	// e.g. https://repo.maven.apache.org/maven2/com/adobe/aem/uber-jar/6.4.8.2/uber-jar-6.4.8.2-sources.jar.sha1
-	if resp.StatusCode == http.StatusNotFound {
-		return nil, nil // TODO add special error for this
-	}
+	// Flush all writers and close all files when done
+	defer a.closeWriters()
 
-	sha1, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return nil, xerrors.Errorf("can't read sha1 %s: %w", url, err)
-	}
+	for rec := range recordsCh {
+		// Calculate shard index based on GroupID+ArtifactID
+		shardIdx := int(hash.GA(rec.GroupID, rec.ArtifactID) % uint64(a.shardCount))
 
-	// there are empty xxx.jar.sha1 files. Skip them.
-	// e.g. https://repo.maven.apache.org/maven2/org/wso2/msf4j/msf4j-swagger/2.5.2/msf4j-swagger-2.5.2.jar.sha1
-	// https://repo.maven.apache.org/maven2/org/wso2/carbon/analytics/org.wso2.carbon.permissions.rest.api/2.0.248/org.wso2.carbon.permissions.rest.api-2.0.248.jar.sha1
-	if len(sha1) == 0 {
-		return nil, nil
-	}
-	// there are xxx.jar.sha1 files with additional data. e.g.:
-	// https://repo.maven.apache.org/maven2/aspectj/aspectjrt/1.5.2a/aspectjrt-1.5.2a.jar.sha1
-	// https://repo.maven.apache.org/maven2/xerces/xercesImpl/2.9.0/xercesImpl-2.9.0.jar.sha1
-	var sha1b []byte
-	for _, s := range strings.Split(strings.TrimSpace(string(sha1)), " ") {
-		sha1b, err = hex.DecodeString(s)
-		if err == nil {
-			break
+		// Get or create writer for this shard
+		writer, err := a.newWriter(shardIdx)
+		if err != nil {
+			a.logger.Error("Failed to get writer",
+				slog.Int("shard", shardIdx),
+				slog.Any("error", err))
+			return xerrors.Errorf("failed to get writer: %w", err)
+		}
+
+		// Write TSV record: GroupID, ArtifactID, Version, SHA1
+		err = writer.Write([]string{
+			rec.GroupID,
+			rec.ArtifactID,
+			rec.Version,
+			rec.Classifier,
+			rec.SHA1,
+		})
+		if err != nil {
+			a.logger.Error("Failed to write record",
+				slog.Int("shard", shardIdx),
+				slog.Any("error", err))
+			return xerrors.Errorf("failed to write record: %w", err)
+		}
+
+		// Periodically flush to disk
+		a.recordsProcessed++
+		if a.recordsProcessed%100000 == 0 {
+			// Flush all writers
+			a.flushWriters()
+			a.logger.Info(fmt.Sprintf("Processed %d records", a.recordsProcessed))
 		}
 	}
-	if len(sha1b) == 0 {
-		c.wrongSHA1Values = append(c.wrongSHA1Values, fmt.Sprintf("%s (%s)", url, err))
-		return nil, nil
-	}
-	return sha1b, nil
+
+	a.logger.Info("Aggregator completed", slog.Int64("total_records", a.recordsProcessed))
+	return nil
 }
 
-func (c *Crawler) httpGet(ctx context.Context, url string) (*http.Response, error) {
-	// Sleep for a while to avoid 429 error
-	randomSleep()
+// newWriter returns a CSV writer for the specified shard, creating it if necessary
+func (a *Aggregator) newWriter(shardIdx int) (*csv.Writer, error) {
+	// Return existing writer if we have one
+	if writer, exists := a.outWriters[shardIdx]; exists {
+		return writer, nil
+	}
 
-	req, err := retryablehttp.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	// Determine format string based on number of shards
+	digits := digitsFor(a.shardCount)
+
+	// Format the shard index as a hex string with appropriate padding
+	hexIndex := fmt.Sprintf("%0*x", digits, shardIdx)
+
+	// Create hierarchical directory structure with 2 characters per level
+	// For example: 0001 -> 00/01.tsv, 0a2b -> 0a/2b.tsv
+
+	// Split hex string into segments of 2 characters using lo.ChunkString
+	segments := lo.ChunkString(hexIndex, 2)
+
+	// Last segment is the filename
+	subPath := filepath.Join(segments...) + ".tsv"
+	outPath := filepath.Join(a.baseDir, subPath)
+
+	// Create subdirectories
+	if err := os.MkdirAll(filepath.Dir(outPath), 0755); err != nil {
+		return nil, xerrors.Errorf("failed to create shard directory: %w", err)
+	}
+
+	// Create or open the TSV file
+	file, err := os.OpenFile(outPath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
 	if err != nil {
-		return nil, xerrors.Errorf("unable to create a HTTP request: %w", err)
+		return nil, xerrors.Errorf("failed to open file: %w", err)
 	}
-	resp, err := c.http.Do(req)
-	if err != nil {
-		return nil, xerrors.Errorf("http error (%s): %w", url, err)
-	}
-	return resp, nil
+
+	// Create buffered writer
+	writer := csv.NewWriter(file)
+	writer.Comma = '\t' // Use tab as delimiter
+
+	// Store references
+	a.outFiles[shardIdx] = file
+	a.outWriters[shardIdx] = writer
+
+	return writer, nil
 }
 
-func (c *Crawler) versionsFromDB(groupID, artifactID string) (map[string][]byte, error) {
-	if c.dbc == nil {
-		return nil, nil
+// flushWriters flushes all CSV writers
+func (a *Aggregator) flushWriters() {
+	for shardIdx, writer := range a.outWriters {
+		writer.Flush()
+		if err := writer.Error(); err != nil {
+			a.logger.Error("Error flushing CSV writer", slog.Int("shard", shardIdx), slog.Any("error", err))
+		}
 	}
-	return c.dbc.SelectVersionsByArtifactIDAndGroupID(artifactID, groupID)
 }
 
-// parseItemName parses item name and returns groupID, artifactID and version
+// closeWriters closes all open files
+func (a *Aggregator) closeWriters() {
+	// First flush CSV writers
+	a.flushWriters()
+
+	// Close all files
+	for shardIdx, file := range a.outFiles {
+		if err := file.Close(); err != nil {
+			a.logger.Error("Failed to close file", slog.Int("shard", shardIdx), slog.Any("error", err))
+		}
+	}
+}
+
+// digitsFor calculates the number of hex digits needed to represent n values
+func digitsFor(n int) int {
+	d := int(math.Ceil(math.Log(float64(n)) / math.Log(16)))
+	if d < 2 {
+		return 2
+	}
+	return d
+}
+
+// parseItemName parses item name and returns groupID, artifactID, version and classifier
 func parseItemName(name string) (string, string, string, string) {
 	name = strings.TrimPrefix(name, "maven2/")
 	ss := strings.Split(name, "/")
@@ -420,15 +598,23 @@ func parseItemName(name string) (string, string, string, string) {
 	}
 	groupID := strings.Join(ss[:len(ss)-3], ".")
 	artifactID := ss[len(ss)-3]
-	versionDir := ss[len(ss)-2]
-	// Take version from filename
-	version := strings.TrimSuffix(strings.TrimPrefix(ss[len(ss)-1], artifactID+"-"), ".jar.sha1")
-	return groupID, artifactID, versionDir, version
+	version := ss[len(ss)-2]
 
-}
+	// Parse the filename to extract classifier
+	// Example format:
+	// artifactID-version.jar.sha1 (no classifier)
+	// artifactID-version-classifier.jar.sha1 (with classifier)
+	filename := ss[len(ss)-1]
+	filenameBase := strings.TrimSuffix(filename, ".jar.sha1")
 
-func randomSleep() {
-	// Seed rand
-	r := rand.New(rand.NewSource(int64(time.Now().Nanosecond())))
-	time.Sleep(time.Duration(r.Float64() * float64(100*time.Millisecond)))
+	// Remove artifactID-version prefix
+	filenameBase = strings.TrimPrefix(filenameBase, artifactID+"-"+version)
+
+	// If the filename is empty, it means there is no classifier
+	var classifier string
+	if strings.HasPrefix(filenameBase, "-") {
+		classifier = strings.TrimPrefix(filenameBase, "-")
+	}
+
+	return groupID, artifactID, version, classifier
 }
