@@ -44,7 +44,7 @@ func (b *Builder) Build(indexDir string) error {
 	defer bar.Finish()
 
 	err = fileutil.Walk(indexDir, func(r io.Reader, path string) error {
-		// 	// Process only TSV files
+		// Process only TSV files
 		if filepath.Ext(path) != ".tsv" {
 			return nil
 		}
