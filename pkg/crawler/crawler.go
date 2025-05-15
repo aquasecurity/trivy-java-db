@@ -466,7 +466,7 @@ func (f *Fetcher) fetch(ctx context.Context, item string, recordCh chan<- Record
 func (a *Aggregator) Run(recordsCh <-chan Record) error {
 	a.logger.Info("Starting record aggregator")
 
-	// Close all writers and files when done
+	// Flush all writers and close all files when done
 	defer a.closeWriters()
 
 	for rec := range recordsCh {
@@ -505,9 +505,6 @@ func (a *Aggregator) Run(recordsCh <-chan Record) error {
 			a.logger.Info(fmt.Sprintf("Processed %d records", a.recordsProcessed))
 		}
 	}
-
-	// Final flush of CSV writers and buffer writers
-	a.flushWriters()
 
 	a.logger.Info("Aggregator completed", slog.Int64("total_records", a.recordsProcessed))
 	return nil
