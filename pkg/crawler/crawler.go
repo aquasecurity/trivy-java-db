@@ -611,9 +611,7 @@ func parseItemName(name string) (string, string, string, string) {
 	filenameBase := strings.TrimSuffix(filename, ".jar.sha1")
 
 	// Remove artifactID-version prefix
-	if strings.HasPrefix(filenameBase, artifactID+"-"+version+"-") {
-		filenameBase = strings.TrimPrefix(filenameBase, artifactID+"-"+version)
-	}
+	filenameBase = strings.TrimPrefix(filenameBase, artifactID+"-"+version)
 
 	// If the filename is empty, it means there is no classifier
 	var classifier string
