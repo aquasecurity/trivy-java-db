@@ -183,7 +183,7 @@ func (s *Source) read(ctx context.Context, records <-chan data.Record, errCh cha
 			return err
 		}
 
-		if record.Type() != data.ArtifactAdd || record.Get("fileExtension") != "jar" {
+		if record.Type() != data.ArtifactAdd {
 			continue
 		}
 
@@ -211,6 +211,10 @@ func (s *Source) read(ctx context.Context, records <-chan data.Record, errCh cha
 				ArtifactID: rec.ArtifactID,
 				Version:    rec.Version,
 			}
+		}
+
+		if record.Get("fileExtension") != "jar" {
+			continue
 		}
 
 		// Validate the SHA1 hash
