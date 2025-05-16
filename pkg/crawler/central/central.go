@@ -14,30 +14,36 @@ import (
 	"path"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 
 	"github.com/elireisman/maven-index-reader-go/pkg/config"
 	"github.com/elireisman/maven-index-reader-go/pkg/data"
 	"github.com/elireisman/maven-index-reader-go/pkg/readers"
 	"github.com/hashicorp/go-retryablehttp"
+	"golang.org/x/sync/errgroup"
 	"golang.org/x/xerrors"
 
+	"github.com/aquasecurity/trivy-java-db/pkg/crawler/sha1"
 	"github.com/aquasecurity/trivy-java-db/pkg/crawler/types"
 	"github.com/aquasecurity/trivy-java-db/pkg/hash"
+	"github.com/aquasecurity/trivy-java-db/pkg/index"
 )
 
 var _ types.Source = (*Source)(nil)
 
 const defaultURL = "https://repo.maven.apache.org/maven2/.index/nexus-maven-repository-index.gz"
+const mavenCentralURL = "https://repo.maven.apache.org/maven2"
 
 // Source implements the crawler.Source interface for Maven Central Index
 type Source struct {
-	indexPath   string
-	url         string
-	httpClient  *retryablehttp.Client
-	logger      *slog.Logger
-	storedGAVCs map[uint64]struct{} // GroupID, ArtifactID, Version, Classifier
-	processed   int
-	errCount    int
+	indexPath    string
+	url          string
+	httpClient   *retryablehttp.Client
+	logger       *slog.Logger
+	storedGAVCs  map[uint64]struct{}     // GroupID, ArtifactID, Version, Classifier
+	missingSHA1s map[uint64]types.Record // GAVC hash -> record without SHA1
+	processed    int
+	errCount     int
 }
 
 // New creates a new Maven Central Index source
@@ -55,11 +61,12 @@ func New(httpClient *retryablehttp.Client, url string, cacheDir string, storedGA
 	}
 
 	return &Source{
-		indexPath:   filepath.Join(centralCacheDir, fileName),
-		url:         targetURL,
-		httpClient:  httpClient,
-		logger:      slog.Default().With(slog.String("source", "central")),
-		storedGAVCs: storedGAVs,
+		indexPath:    filepath.Join(centralCacheDir, fileName),
+		url:          targetURL,
+		httpClient:   httpClient,
+		logger:       slog.Default().With(slog.String("source", "central")),
+		storedGAVCs:  storedGAVs,
+		missingSHA1s: make(map[uint64]types.Record),
 	}, nil
 }
 
@@ -146,6 +153,21 @@ func (s *Source) Read(ctx context.Context, recordCh chan<- types.Record) error {
 		}
 	}()
 
+	if err := s.read(ctx, records, errCh, recordCh); err != nil {
+		return xerrors.Errorf("failed to read central index: %w", err)
+	}
+
+	s.logger.Info("Missing SHA1s", slog.Int("count", len(s.missingSHA1s)))
+
+	// Fetch missing SHA1s from Maven Central directly
+	if err := s.fetchMissingSHA1s(ctx, recordCh); err != nil {
+		return xerrors.Errorf("failed to fetch missing SHA1s: %w", err)
+	}
+
+	return nil
+}
+
+func (s *Source) read(ctx context.Context, records <-chan data.Record, errCh chan error, recordCh chan<- types.Record) error {
 	var record data.Record
 	var ok bool
 	for {
@@ -176,6 +198,20 @@ func (s *Source) Read(ctx context.Context, recordCh chan<- types.Record) error {
 			continue
 		}
 
+		// Store GAV hash without classifier and delete it if SHA1 is found.
+		// Central index may only contain records with classifiers, but records without classifier might exist.
+		// For example, ai.ancf.lmos-router:benchmarks only has records with 'sources' or 'javadoc' classifiers in central index,
+		// but the record without classifier actually exists and needs to be fetched from remote.
+		// https://repo.maven.apache.org/maven2/ai/ancf/lmos-router/benchmarks/0.2.0/benchmarks-0.2.0.jar.sha1
+		gavHash := hash.GAVC(rec.GroupID, rec.ArtifactID, rec.Version, "")
+		if _, exists := s.storedGAVCs[gavHash]; !exists {
+			s.missingSHA1s[gavHash] = types.Record{ // Need only GAV
+				GroupID:    rec.GroupID,
+				ArtifactID: rec.ArtifactID,
+				Version:    rec.Version,
+			}
+		}
+
 		// Validate the SHA1 hash
 		if _, err := hex.DecodeString(rec.SHA1); err != nil || len(rec.SHA1) != 40 {
 			s.errCount++
@@ -188,16 +224,17 @@ func (s *Source) Read(ctx context.Context, recordCh chan<- types.Record) error {
 			continue
 		}
 		switch rec.Classifier {
-		case "metadata", "src", "schemas", "config", "properties", "docs", "readme", "changelog", "cyclonedx", "kdoc":
+		case "src", "schemas", "config", "properties", "docs", "readme", "changelog", "cyclonedx", "kdoc":
 			continue
 		}
 
 		// Skip if already processed
-		gavHash := hash.GAVC(rec.GroupID, rec.ArtifactID, rec.Version, rec.Classifier)
-		if _, exists := s.storedGAVCs[gavHash]; exists {
+		gavcHash := hash.GAVC(rec.GroupID, rec.ArtifactID, rec.Version, rec.Classifier)
+		if _, exists := s.storedGAVCs[gavcHash]; exists {
 			continue
 		}
-		s.storedGAVCs[gavHash] = struct{}{}
+		s.storedGAVCs[gavcHash] = struct{}{}
+		delete(s.missingSHA1s, gavcHash) // SHA1 found, remove from missingSHA1s
 
 		recordCh <- rec
 		s.processed++
@@ -205,6 +242,102 @@ func (s *Source) Read(ctx context.Context, recordCh chan<- types.Record) error {
 			s.logger.Info(fmt.Sprintf("Parsed %d records", s.processed))
 		}
 	}
+}
+
+// fetchMissingSHA1s fetches missing SHA1s directly from Maven Central repository
+func (s *Source) fetchMissingSHA1s(ctx context.Context, recordCh chan<- types.Record) error {
+	if len(s.missingSHA1s) == 0 {
+		return nil
+	}
+
+	// Create an error group for parallel fetching
+	g, ctx := errgroup.WithContext(ctx)
+	g.SetLimit(100)
+
+	var processedCount, fetchedCount atomic.Int64
+
+	// Process each missing SHA1
+	for _, rec := range s.missingSHA1s {
+		g.Go(func() error {
+			defer processedCount.Add(1)
+
+			// Create the SHA1 URL based on GAV coordinates
+			// Maven Central URL pattern: baseURL/groupId/artifactId/version/artifactId-version[-classifier].jar.sha1
+			// Convert dots in groupId to slashes
+			groupPath := strings.ReplaceAll(rec.GroupID, ".", "/")
+
+			// Build jar name: artifactId-version[-classifier].jar
+			jarName := rec.ArtifactID + "-" + rec.Version + ".jar"
+
+			// Build the complete URL
+			url := fmt.Sprintf("%s/%s/%s/%s/%s.sha1",
+				mavenCentralURL,
+				groupPath,
+				rec.ArtifactID,
+				rec.Version,
+				jarName)
+
+			// Create the request
+			req, err := retryablehttp.NewRequest("GET", url, nil)
+			if err != nil {
+				return nil // Skip this item on error
+			}
+
+			// Execute the request
+			resp, err := s.httpClient.Do(req)
+			if err != nil {
+				return nil // Skip this item on error
+			}
+			defer resp.Body.Close()
+
+			switch resp.StatusCode {
+			case http.StatusOK:
+			case http.StatusNotFound: // Store "N/A" to skip this item in the future
+			default:
+				s.logger.Warn("Unexpected status code", slog.String("url", url), slog.Int("status", resp.StatusCode))
+				return nil // Temporary error, skip storing this item to try again next time
+			}
+
+			// Read the SHA1 content
+			data, err := io.ReadAll(resp.Body)
+			if err != nil {
+				return nil // Skip this item on error
+			}
+
+			// Process the SHA1 content
+			digest := sha1.Parse(data)
+			if digest != index.NotAvailable {
+				fetchedCount.Add(1)
+			}
+
+			// Send the record to the output channel
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			case recordCh <- types.Record{
+				GroupID:    rec.GroupID,
+				ArtifactID: rec.ArtifactID,
+				Version:    rec.Version,
+				SHA1:       digest,
+			}:
+			}
+			return nil
+		})
+		if processedCount.Load()%10000 == 0 {
+			s.logger.Info(fmt.Sprintf("Fetched %d missing SHA1s out of %d", processedCount.Load(), len(s.missingSHA1s)))
+		}
+	}
+
+	// Wait for all goroutines to complete
+	if err := g.Wait(); err != nil {
+		return xerrors.Errorf("error fetching SHA1s: %w", err)
+	}
+
+	s.logger.Info("Completed fetching SHA1s from Maven Central",
+		slog.Int64("fetched", fetchedCount.Load()),
+		slog.Int64("total_attempted", int64(len(s.missingSHA1s))))
+
+	return nil
 }
 
 func (s *Source) Processed() int {
