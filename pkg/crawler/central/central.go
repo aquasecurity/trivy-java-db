@@ -23,6 +23,7 @@ import (
 	"golang.org/x/sync/errgroup"
 	"golang.org/x/xerrors"
 
+	"github.com/aquasecurity/trivy-java-db/pkg/crawler/central/maven"
 	"github.com/aquasecurity/trivy-java-db/pkg/crawler/sha1"
 	"github.com/aquasecurity/trivy-java-db/pkg/crawler/types"
 	"github.com/aquasecurity/trivy-java-db/pkg/hash"
@@ -218,13 +219,7 @@ func (s *Source) read(ctx context.Context, records <-chan data.Record, errCh cha
 			continue
 		}
 
-		// e.g. tests-javadoc, test-fixtures, source-release, debug-sources, etc.
-		if strings.HasPrefix(rec.Classifier, "source") || strings.HasPrefix(rec.Classifier, "test") || strings.HasPrefix(rec.Classifier, "debug") ||
-			strings.HasPrefix(rec.Classifier, "javadoc") || strings.HasSuffix(rec.Classifier, "javadoc") {
-			continue
-		}
-		switch rec.Classifier {
-		case "src", "schemas", "config", "properties", "docs", "readme", "changelog", "cyclonedx", "kdoc":
+		if !maven.ValidateClassifier(rec.Classifier) {
 			continue
 		}
 

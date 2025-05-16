@@ -10,6 +10,7 @@ import (
 
 	"golang.org/x/sync/errgroup"
 
+	"github.com/aquasecurity/trivy-java-db/pkg/crawler/central/maven"
 	"github.com/aquasecurity/trivy-java-db/pkg/crawler/types"
 	"github.com/aquasecurity/trivy-java-db/pkg/hash"
 )
@@ -66,7 +67,11 @@ func (f *Fetcher) Run(ctx context.Context, itemCh <-chan string, recordCh chan<-
 func (f *Fetcher) fetch(ctx context.Context, item string, recordCh chan<- types.Record) error {
 	// Parse artifact coordinates
 	groupID, artifactID, version, classifier := parseItemName(item)
-	if groupID == "" || artifactID == "" {
+	if groupID == "" || artifactID == "" || version == "" {
+		return nil
+	}
+
+	if !maven.ValidateClassifier(classifier) {
 		return nil
 	}
 
