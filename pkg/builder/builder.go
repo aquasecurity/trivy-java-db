@@ -79,7 +79,8 @@ func (b *Builder) Build(indexDir string) error {
 
 			sha1, err := hex.DecodeString(sha1str)
 			if err != nil {
-				slog.Error("failed to decode SHA1", slog.Any("error", err), slog.String("sha1", sha1str))
+				slog.Error("Failed to decode SHA1", slog.Any("error", err), slog.String("groupID", groupID), slog.String("artifactId", artifactID),
+					slog.String("version", version), slog.String("classifier", classifier), slog.String("sha1", sha1str))
 				return xerrors.Errorf("failed to decode SHA1: %w", err) // Should never happen as we validate SHA1 in crawler
 			}
 
