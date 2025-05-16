@@ -98,11 +98,6 @@ func NewCrawler(opt Option) (Crawler, error) {
 	client.RetryWaitMin = 1 * time.Minute
 	client.RetryWaitMax = 5 * time.Minute
 	client.Backoff = retryablehttp.LinearJitterBackoff
-	client.ResponseLogHook = func(_ retryablehttp.Logger, resp *http.Response) {
-		if resp.StatusCode != http.StatusOK {
-			slog.Warn("Unexpected http response", slog.String("url", resp.Request.URL.String()), slog.String("status", resp.Status))
-		}
-	}
 	client.ErrorHandler = func(resp *http.Response, err error, numTries int) (*http.Response, error) {
 		logger := slog.Default()
 		if resp != nil {
