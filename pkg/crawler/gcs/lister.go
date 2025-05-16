@@ -42,6 +42,8 @@ func (l *Lister) Run(ctx context.Context, itemCh chan<- string) error {
 		// Handle errors during iteration immediately
 		if err != nil {
 			return xerrors.Errorf("failed to list top-level prefixes: %w", err)
+		} else if prefix == "maven2/data/" { // Skip data directory as it's not present in Maven Central
+			continue
 		}
 
 		g.Go(func() error {
