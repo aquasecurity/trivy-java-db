@@ -273,10 +273,6 @@ func (c *Crawler) loadExistingIndexes() error {
 				}
 
 				groupID, artifactID, version, classifier := record[0], record[1], record[2], record[3]
-				if classifier == "-" {
-					classifier = ""
-				}
-
 				gavHash := hash.GAVC(groupID, artifactID, version, classifier)
 
 				c.mutex.Lock()
