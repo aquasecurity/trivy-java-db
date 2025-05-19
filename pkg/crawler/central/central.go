@@ -3,7 +3,6 @@ package central
 import (
 	"cmp"
 	"context"
-	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
@@ -35,16 +34,40 @@ var _ types.Source = (*Source)(nil)
 const defaultURL = "https://repo.maven.apache.org/maven2/.index/nexus-maven-repository-index.gz"
 const mavenCentralURL = "https://repo.maven.apache.org/maven2"
 
+// NOTE: The SHA1 values in the Maven Central Index are known to be unreliable and should not be trusted.
+// Therefore, this implementation follows a two-step process:
+//
+//   1. Extract a list of GAVC (GroupID, ArtifactID, Version, Classifier) coordinates from the central index.
+//   2. For each GAVC, fetch the correct SHA1 value directly from Maven Central repository.
+//
+// This ensures that only accurate SHA1s are stored and used.
+//
+// The overall flow can be visualized as:
+//
+//   +-------------------+         +-------------------+
+//   | Central Index     |         | Maven Central     |
+//   |  (GAVC list)     |         |  (SHA1 endpoint)  |
+//   +--------+----------+         +---------+---------+
+//            |                              ^
+//            | 1. Extract GAVC list         |
+//            v                              |
+//   +-------------------+                   |
+//   |   This Crawler    |-------------------+
+//   |                   |   2. Fetch SHA1 for each GAVC
+//   +-------------------+
+//
+// See: https://github.com/aquasecurity/trivy-java-db/pull/58#issuecomment-2890441162
+
 // Source implements the crawler.Source interface for Maven Central Index
 type Source struct {
-	indexPath    string
-	url          string
-	httpClient   *retryablehttp.Client
-	logger       *slog.Logger
-	storedGAVCs  map[uint64]struct{}     // GroupID, ArtifactID, Version, Classifier
-	missingSHA1s map[uint64]types.Record // GAVC hash -> record without SHA1
-	processed    int
-	errCount     int
+	indexPath   string
+	url         string
+	httpClient  *retryablehttp.Client
+	logger      *slog.Logger
+	storedGAVCs map[uint64]struct{} // GroupID, ArtifactID, Version, Classifier
+	records     []types.Record      // All GAVC records stored in central index
+	processed   int
+	errCount    int
 }
 
 // New creates a new Maven Central Index source
@@ -62,12 +85,11 @@ func New(httpClient *retryablehttp.Client, url string, cacheDir string, storedGA
 	}
 
 	return &Source{
-		indexPath:    filepath.Join(centralCacheDir, fileName),
-		url:          targetURL,
-		httpClient:   httpClient,
-		logger:       slog.Default().With(slog.String("source", "central")),
-		storedGAVCs:  storedGAVs,
-		missingSHA1s: make(map[uint64]types.Record),
+		indexPath:   filepath.Join(centralCacheDir, fileName),
+		url:         targetURL,
+		httpClient:  httpClient,
+		logger:      slog.Default().With(slog.String("source", "central")),
+		storedGAVCs: storedGAVs,
 	}, nil
 }
 
@@ -154,15 +176,16 @@ func (s *Source) Read(ctx context.Context, recordCh chan<- types.Record) error {
 		}
 	}()
 
+	// Collect GAVC records from central index
 	if err := s.read(ctx, records, errCh, recordCh); err != nil {
 		return xerrors.Errorf("failed to read central index: %w", err)
 	}
 
-	s.logger.Info("Missing SHA1s", slog.Int("count", len(s.missingSHA1s)))
+	s.logger.Info("Records in central index", slog.Int("count", len(s.records)))
 
-	// Fetch missing SHA1s from Maven Central directly
-	if err := s.fetchMissingSHA1s(ctx, recordCh); err != nil {
-		return xerrors.Errorf("failed to fetch missing SHA1s: %w", err)
+	// Fetch SHA1s from Maven Central
+	if err := s.fetchSHA1s(ctx, recordCh); err != nil {
+		return xerrors.Errorf("failed to fetch SHA1s: %w", err)
 	}
 
 	return nil
@@ -171,6 +194,7 @@ func (s *Source) Read(ctx context.Context, recordCh chan<- types.Record) error {
 func (s *Source) read(ctx context.Context, records <-chan data.Record, errCh chan error, recordCh chan<- types.Record) error {
 	var record data.Record
 	var ok bool
+	var count int
 	for {
 		select {
 		case record, ok = <-records:
@@ -187,43 +211,19 @@ func (s *Source) read(ctx context.Context, records <-chan data.Record, errCh cha
 			continue
 		}
 
+		// Since SHA1 is not reliable in central index, we need to fetch it from Maven Central
+		// cf. https://github.com/aquasecurity/trivy-java-db/pull/58#issuecomment-2890441162
 		rec := types.Record{
 			GroupID:    mustGet[string](record, "groupId"),
 			ArtifactID: mustGet[string](record, "artifactId"),
 			Version:    mustGet[string](record, "version"),
 			Classifier: mustGet[string](record, "classifier"),
-			SHA1:       mustGet[string](record, "sha1"),
 		}
 
-		if rec.GroupID == "" || rec.ArtifactID == "" || rec.Version == "" {
+		switch {
+		case rec.GroupID == "" || rec.ArtifactID == "" || rec.Version == "":
 			continue
-		}
-
-		// Store GAV hash without classifier and delete it if SHA1 is found.
-		// Central index may only contain records with classifiers, but records without classifier might exist.
-		// For example, ai.ancf.lmos-router:benchmarks only has records with 'sources' or 'javadoc' classifiers in central index,
-		// but the record without classifier actually exists and needs to be fetched from remote.
-		// https://repo.maven.apache.org/maven2/ai/ancf/lmos-router/benchmarks/0.2.0/benchmarks-0.2.0.jar.sha1
-		gavHash := hash.GAVC(rec.GroupID, rec.ArtifactID, rec.Version, "")
-		if _, exists := s.storedGAVCs[gavHash]; !exists {
-			s.missingSHA1s[gavHash] = types.Record{ // Need only GAV
-				GroupID:    rec.GroupID,
-				ArtifactID: rec.ArtifactID,
-				Version:    rec.Version,
-			}
-		}
-
-		if record.Get("fileExtension") != "jar" {
-			continue
-		}
-
-		// Validate the SHA1 hash
-		if _, err := hex.DecodeString(rec.SHA1); err != nil || len(rec.SHA1) != 40 {
-			s.errCount++
-			continue
-		}
-
-		if !maven.ValidateClassifier(rec.Classifier) {
+		case !maven.ValidateClassifier(rec.Classifier):
 			continue
 		}
 
@@ -233,19 +233,22 @@ func (s *Source) read(ctx context.Context, records <-chan data.Record, errCh cha
 			continue
 		}
 		s.storedGAVCs[gavcHash] = struct{}{}
-		delete(s.missingSHA1s, gavcHash) // SHA1 found, remove from missingSHA1s
+		s.records = append(s.records, rec)
 
-		recordCh <- rec
-		s.processed++
-		if s.processed%100000 == 0 {
-			s.logger.Info(fmt.Sprintf("Parsed %d records", s.processed))
+		count++
+		if count%100000 == 0 {
+			s.logger.Info(fmt.Sprintf("Parsed %d records", count))
 		}
 	}
 }
 
-// fetchMissingSHA1s fetches missing SHA1s directly from Maven Central repository
-func (s *Source) fetchMissingSHA1s(ctx context.Context, recordCh chan<- types.Record) error {
-	if len(s.missingSHA1s) == 0 {
+// fetchSHA1s fetches SHA1s from Maven Central repository
+//
+// For each GAVC record collected from the central index, this function constructs the corresponding
+// Maven Central URL and fetches the SHA1 checksum directly. This avoids using the unreliable SHA1s
+// from the index itself.
+func (s *Source) fetchSHA1s(ctx context.Context, recordCh chan<- types.Record) error {
+	if len(s.records) == 0 {
 		return nil
 	}
 
@@ -255,8 +258,8 @@ func (s *Source) fetchMissingSHA1s(ctx context.Context, recordCh chan<- types.Re
 
 	var processedCount, fetchedCount atomic.Int64
 
-	// Process each missing SHA1
-	for _, rec := range s.missingSHA1s {
+	// Process each record
+	for _, rec := range s.records {
 		g.Go(func() error {
 			defer processedCount.Add(1)
 
@@ -317,13 +320,14 @@ func (s *Source) fetchMissingSHA1s(ctx context.Context, recordCh chan<- types.Re
 				GroupID:    rec.GroupID,
 				ArtifactID: rec.ArtifactID,
 				Version:    rec.Version,
+				Classifier: rec.Classifier,
 				SHA1:       digest,
 			}:
 			}
 			return nil
 		})
 		if processedCount.Load()%10000 == 0 {
-			s.logger.Info(fmt.Sprintf("Fetched %d missing SHA1s out of %d", processedCount.Load(), len(s.missingSHA1s)))
+			s.logger.Info(fmt.Sprintf("Fetched %d SHA1s out of %d", processedCount.Load(), len(s.records)))
 		}
 	}
 
@@ -334,7 +338,9 @@ func (s *Source) fetchMissingSHA1s(ctx context.Context, recordCh chan<- types.Re
 
 	s.logger.Info("Completed fetching SHA1s from Maven Central",
 		slog.Int64("fetched", fetchedCount.Load()),
-		slog.Int64("total_attempted", int64(len(s.missingSHA1s))))
+		slog.Int64("total_attempted", int64(len(s.records))))
+
+	s.processed = int(fetchedCount.Load())
 
 	return nil
 }
