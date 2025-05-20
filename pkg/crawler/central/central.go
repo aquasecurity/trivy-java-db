@@ -261,7 +261,12 @@ func (s *Source) fetchSHA1s(ctx context.Context, recordCh chan<- types.Record) e
 	// Process each record
 	for _, rec := range s.records {
 		g.Go(func() error {
-			defer processedCount.Add(1)
+			defer func() {
+				current := processedCount.Add(1)
+				if current%10000 == 0 {
+					s.logger.Info(fmt.Sprintf("Fetched %d SHA1s out of %d", current, len(s.records)))
+				}
+			}()
 
 			// Create the SHA1 URL based on GAV coordinates
 			// Maven Central URL pattern: baseURL/groupId/artifactId/version/artifactId-version[-classifier].jar.sha1
@@ -327,9 +332,6 @@ func (s *Source) fetchSHA1s(ctx context.Context, recordCh chan<- types.Record) e
 			}
 			return nil
 		})
-		if processedCount.Load()%10000 == 0 {
-			s.logger.Info(fmt.Sprintf("Fetched %d SHA1s out of %d", processedCount.Load(), len(s.records)))
-		}
 	}
 
 	// Wait for all goroutines to complete
