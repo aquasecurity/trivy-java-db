@@ -129,11 +129,16 @@ func parseItemName(name string) (string, string, string, string) {
 	// Remove artifactID-version prefix
 	filenameBase = strings.TrimPrefix(filenameBase, artifactID+"-"+version)
 
-	// If the filename is empty, it means there is no classifier
-	var classifier string
-	if strings.HasPrefix(filenameBase, "-") {
-		classifier = strings.TrimPrefix(filenameBase, "-")
-	}
+	// If the remaining filename is empty, it means there is no classifier.
+	// Typically, classifiers are specified with a hyphen, and trimming the hyphen prefix
+	// gives us the classifier (e.g., -lite => lite)
+	//
+	// However, there are special cases where variants are added after the version without a hyphen.
+	// This is not a correct format for classifiers, but we don't know how to handle it properly at the moment.
+	// Therefore, we treat any remaining string as a classifier.
+	// Example: https://repo.maven.apache.org/maven2/io/github/gnuf0rce/debug-helper/1.3.5/debug-helper-1.3.5.mirai2.jar.sha1 => .mirai2
+	classifier := filenameBase
+	classifier = strings.TrimPrefix(filenameBase, "-") // e.g. -lite => lite
 
 	return groupID, artifactID, version, classifier
 }
