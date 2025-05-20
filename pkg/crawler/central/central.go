@@ -294,6 +294,7 @@ func (s *Source) fetchSHA1s(ctx context.Context, recordCh chan<- types.Record) e
 
 			switch resp.StatusCode {
 			case http.StatusOK:
+			case http.StatusForbidden: // e.g. https://repo.maven.apache.org/maven2/com/sourcetohtml/sourcetohtml/1.0.1/sourcetohtml-1.0.1.jar.sha1
 			case http.StatusNotFound: // Store "N/A" to skip this item in the future
 			default:
 				s.logger.Warn("Unexpected status code", slog.String("url", url), slog.Int("status", resp.StatusCode))
