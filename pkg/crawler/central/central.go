@@ -287,13 +287,13 @@ func (s *Source) fetchSHA1s(ctx context.Context, recordCh chan<- types.Record) e
 			// Create the request
 			req, err := retryablehttp.NewRequest("GET", url, nil)
 			if err != nil {
-				return nil // Skip this item on error
+				return err
 			}
 
 			// Execute the request
 			resp, err := s.httpClient.Do(req)
 			if err != nil {
-				return nil // Skip this item on error
+				return err
 			}
 			defer resp.Body.Close()
 
@@ -303,12 +303,15 @@ func (s *Source) fetchSHA1s(ctx context.Context, recordCh chan<- types.Record) e
 			case http.StatusNotFound: // Store "N/A" to skip this item in the future
 			default:
 				s.logger.Warn("Unexpected status code", slog.String("url", url), slog.Int("status", resp.StatusCode))
+				s.errCount++
 				return nil // Temporary error, skip storing this item to try again next time
 			}
 
 			// Read the SHA1 content
 			data, err := io.ReadAll(resp.Body)
 			if err != nil {
+				s.logger.Warn("Failed to read SHA1 content", slog.String("url", url), slog.Any("error", err))
+				s.errCount++
 				return nil // Skip this item on error
 			}
 
@@ -341,7 +344,8 @@ func (s *Source) fetchSHA1s(ctx context.Context, recordCh chan<- types.Record) e
 
 	s.logger.Info("Completed fetching SHA1s from Maven Central",
 		slog.Int64("fetched", fetchedCount.Load()),
-		slog.Int64("total_attempted", int64(len(s.records))))
+		slog.Int64("total_attempted", int64(len(s.records))),
+		slog.Int("errors", s.errCount))
 
 	s.processed = int(fetchedCount.Load())
 

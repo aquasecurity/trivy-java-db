@@ -85,10 +85,9 @@ func (f *Fetcher) fetch(ctx context.Context, item string, recordCh chan<- types.
 
 	// Use the provided Maven client
 	sha1, err := f.client.FetchSHA1(ctx, item)
-	if sha1 == "N/A" {
-		f.errCount.Add(1)
-	} else if err != nil {
+	if err != nil {
 		f.logger.Warn("Failed to fetch SHA1", slog.String("item", item), slog.Any("error", err))
+		f.errCount.Add(1)
 		return nil
 	}
 

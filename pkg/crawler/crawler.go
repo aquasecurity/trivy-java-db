@@ -202,7 +202,7 @@ func (c *Crawler) crawlWithPipeline(ctx context.Context, source types.Source) er
 
 	// Report results
 	slog.Info("Artifact crawling completed", slog.Int("artifacts_processed", source.Processed()),
-		slog.Int64("records_processed", aggregator.recordsProcessed), slog.Int("artifacts_missing_sha1", source.Failed()))
+		slog.Int64("records_processed", aggregator.recordsProcessed), slog.Int("errors", source.Failed()))
 
 	return nil
 }
