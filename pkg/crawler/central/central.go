@@ -14,11 +14,13 @@ import (
 	"path/filepath"
 	"strings"
 	"sync/atomic"
+	"unicode"
 
 	"github.com/elireisman/maven-index-reader-go/pkg/config"
 	"github.com/elireisman/maven-index-reader-go/pkg/data"
 	"github.com/elireisman/maven-index-reader-go/pkg/readers"
 	"github.com/hashicorp/go-retryablehttp"
+	"github.com/samber/lo"
 	"golang.org/x/sync/errgroup"
 	"golang.org/x/xerrors"
 
@@ -223,6 +225,9 @@ func (s *Source) read(ctx context.Context, records <-chan data.Record, errCh cha
 		switch {
 		case rec.GroupID == "" || rec.ArtifactID == "" || rec.Version == "":
 			continue
+		case containsControlChar(rec.GroupID + rec.ArtifactID + rec.Version + rec.Classifier):
+			// Skip records with control characters in groupId, artifactId, version or classifier
+			continue
 		case !maven.ValidateClassifier(rec.Classifier):
 			continue
 		}
@@ -363,4 +368,9 @@ func (s *Source) Failed() int {
 func mustGet[T any](record data.Record, key string) T {
 	v, _ := record.Get(key).(T)
 	return v
+}
+
+// containsControlChar returns true if the string contains any control character (ASCII 0x00-0x1F, 0x7F)
+func containsControlChar(s string) bool {
+	return lo.SomeBy([]rune(s), unicode.IsControl)
 }
