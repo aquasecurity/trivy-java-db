@@ -67,6 +67,7 @@ type Source struct {
 	httpClient  *retryablehttp.Client
 	logger      *slog.Logger
 	storedGAVCs map[uint64]struct{} // GroupID, ArtifactID, Version, Classifier
+	records     []types.Record      // All GAVC records stored in central index
 	processed   int
 	errCount    int
 }
@@ -153,79 +154,67 @@ func (s *Source) Read(ctx context.Context, recordCh chan<- types.Record) error {
 		return xerrors.Errorf("failed to get index file: %w", err)
 	}
 
-	// --- Channel Pipeline Design ---
-	// 1. rawRecordCh: data.Record from index file
-	// 2. parsedRecordCh: types.Record without SHA1
-	// 3. recordCh: types.Record with SHA1 (final output, provided by caller)
+	// Make a queue to buffer records scanned from the index
+	records := make(chan data.Record, 64)
 
-	rawRecordCh := make(chan data.Record, 1024)
-	parsedRecordCh := make(chan types.Record, 1024)
-
-	// Start the pipeline stages
-	g, ctx := errgroup.WithContext(ctx)
-
-	// Stage 1: Read from index file
-	g.Go(func() error {
-		defer close(rawRecordCh)
-		return s.readFromIndex(rawRecordCh)
-	})
-
-	// Stage 2: Parse records
-	g.Go(func() error {
-		defer close(parsedRecordCh)
-		return s.parseRecords(ctx, rawRecordCh, parsedRecordCh)
-	})
-
-	// Stage 3: Fetch SHA1s and send to aggregator
-	g.Go(func() error {
-		return s.fetchSHA1s(ctx, parsedRecordCh, recordCh)
-	})
-
-	// Wait for all stages to complete or return on first error
-	if err := g.Wait(); err != nil {
-		return xerrors.Errorf("pipeline error: %w", err)
-	}
-
-	return nil
-}
-
-// readFromIndex reads data.Record from the index file and sends them to rawRecordCh
-func (s *Source) readFromIndex(rawRecordCh chan<- data.Record) error {
+	// Create a file-based reader
 	logger := log.New(io.Discard, "", log.LstdFlags)
-	reader := readers.NewChunk(logger, rawRecordCh, config.Index{
+	reader := readers.NewChunk(logger, records, config.Index{
 		Mode: config.Mode{
 			Type: config.All,
 		},
 		Source: config.Source{
-			Type: config.Local,
+			Type: config.Local, // Use local file source
 		},
 	}, s.indexPath, nil)
 
-	if err := reader.Read(); err != nil && !errors.Is(err, io.EOF) {
-		return err
+	errCh := make(chan error)
+	defer close(errCh)
+
+	go func() {
+		defer close(records)
+		if err := reader.Read(); err != nil && !errors.Is(err, io.EOF) {
+			errCh <- xerrors.Errorf("failed to read central index: %w", err)
+		}
+	}()
+
+	// Collect GAVC records from central index
+	if err := s.read(ctx, records, errCh, recordCh); err != nil {
+		return xerrors.Errorf("failed to read central index: %w", err)
 	}
+
+	s.logger.Info("Records in central index", slog.Int("count", len(s.records)))
+
+	// Fetch SHA1s from Maven Central
+	if err := s.fetchSHA1s(ctx, recordCh); err != nil {
+		return xerrors.Errorf("failed to fetch SHA1s: %w", err)
+	}
+
 	return nil
 }
 
-// parseRecords parses data.Record into types.Record and validates them
-func (s *Source) parseRecords(ctx context.Context, rawRecordCh <-chan data.Record, parsedRecordCh chan<- types.Record) error {
+func (s *Source) read(ctx context.Context, records <-chan data.Record, errCh chan error, recordCh chan<- types.Record) error {
 	var record data.Record
 	var ok bool
 	var count int
 	for {
 		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		case record, ok = <-rawRecordCh:
+		case record, ok = <-records:
 			if !ok {
 				return nil
 			}
+		case <-ctx.Done():
+			return ctx.Err()
+		case err := <-errCh:
+			return err
 		}
 
 		if record.Type() != data.ArtifactAdd {
 			continue
 		}
 
+		// Since SHA1 is not reliable in central index, we need to fetch it from Maven Central
+		// cf. https://github.com/aquasecurity/trivy-java-db/pull/58#issuecomment-2890441162
 		rec := types.Record{
 			GroupID:    mustGet[string](record, "groupId"),
 			ArtifactID: mustGet[string](record, "artifactId"),
@@ -233,124 +222,139 @@ func (s *Source) parseRecords(ctx context.Context, rawRecordCh <-chan data.Recor
 			Classifier: mustGet[string](record, "classifier"),
 		}
 
-		if !s.validateRecord(rec) {
+		switch {
+		case rec.GroupID == "" || rec.ArtifactID == "" || rec.Version == "":
+			continue
+		case containsControlChar(rec.GroupID + rec.ArtifactID + rec.Version + rec.Classifier):
+			// Skip records with control characters in groupId, artifactId, version or classifier
+			continue
+		case !maven.ValidateClassifier(rec.Classifier):
 			continue
 		}
 
+		// Skip if already processed
 		gavcHash := hash.GAVC(rec.GroupID, rec.ArtifactID, rec.Version, rec.Classifier)
 		if _, exists := s.storedGAVCs[gavcHash]; exists {
 			continue
 		}
 		s.storedGAVCs[gavcHash] = struct{}{}
+		s.records = append(s.records, rec)
 
 		count++
 		if count%100000 == 0 {
 			s.logger.Info(fmt.Sprintf("Parsed %d records", count))
 		}
-
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		case parsedRecordCh <- rec: // Send the record to the next stage
-		}
 	}
 }
 
-// validateRecord checks if a record is valid
-func (s *Source) validateRecord(rec types.Record) bool {
-	switch {
-	case rec.GroupID == "" || rec.ArtifactID == "" || rec.Version == "":
-		return false
-	// case containsControlChar(rec.GroupID + rec.ArtifactID + rec.Version + rec.Classifier):
-	// 	return false
-	case !maven.ValidateClassifier(rec.Classifier):
-		return false
+// fetchSHA1s fetches SHA1s from Maven Central repository
+//
+// For each GAVC record collected from the central index, this function constructs the corresponding
+// Maven Central URL and fetches the SHA1 checksum directly. This avoids using the unreliable SHA1s
+// from the index itself.
+func (s *Source) fetchSHA1s(ctx context.Context, recordCh chan<- types.Record) error {
+	if len(s.records) == 0 {
+		return nil
 	}
-	return true
-}
 
-// fetchSHA1s fetches SHA1 for each record and sends the enriched record to the output channel
-func (s *Source) fetchSHA1s(ctx context.Context, parsedRecordCh <-chan types.Record, recordCh chan<- types.Record) error {
-	const batchSize = 200
-	var processedCount, fetchedCount atomic.Int64
+	// Create an error group for parallel fetching
 	g, ctx := errgroup.WithContext(ctx)
-	for range batchSize {
+	g.SetLimit(100)
+
+	var processedCount, fetchedCount atomic.Int64
+
+	// Process each record
+	for _, rec := range s.records {
 		g.Go(func() error {
-			var rec types.Record
-			var ok bool
-			for {
-				select {
-				case <-ctx.Done():
-					return ctx.Err()
-				case rec, ok = <-parsedRecordCh:
-					if !ok {
-						return nil
-					}
-				}
-				sha1, err := s.fetchSHA1(rec)
-				if err != nil {
-					return xerrors.Errorf("failed to fetch SHA1: %w", err)
-				} else if sha1 != index.NotAvailable {
-					fetchedCount.Add(1)
-				}
-
-				enrichedRec := rec
-				enrichedRec.SHA1 = sha1
-
-				select {
-				case <-ctx.Done():
-					return ctx.Err()
-				case recordCh <- enrichedRec:
-				}
-
+			defer func() {
 				current := processedCount.Add(1)
 				if current%10000 == 0 {
-					s.logger.Info(fmt.Sprintf("Fetched %d SHA1s", current))
+					s.logger.Info(fmt.Sprintf("Fetched %d SHA1s out of %d", current, len(s.records)))
 				}
+			}()
+
+			// Create the SHA1 URL based on GAV coordinates
+			// Maven Central URL pattern: baseURL/groupId/artifactId/version/artifactId-version[-classifier].jar.sha1
+			// Convert dots in groupId to slashes
+			groupPath := strings.ReplaceAll(rec.GroupID, ".", "/")
+
+			// Build jar name: artifactId-version[-classifier].jar
+			jarName := rec.ArtifactID + "-" + rec.Version + ".jar"
+
+			// Build the complete URL
+			url := fmt.Sprintf("%s/%s/%s/%s/%s.sha1",
+				mavenCentralURL,
+				groupPath,
+				rec.ArtifactID,
+				rec.Version,
+				jarName)
+
+			// Create the request
+			req, err := retryablehttp.NewRequest("GET", url, nil)
+			if err != nil {
+				return err
 			}
+
+			// Execute the request
+			resp, err := s.httpClient.Do(req)
+			if err != nil {
+				return err
+			}
+			defer resp.Body.Close()
+
+			switch resp.StatusCode {
+			case http.StatusOK:
+			case http.StatusForbidden: // e.g. https://repo.maven.apache.org/maven2/com/sourcetohtml/sourcetohtml/1.0.1/sourcetohtml-1.0.1.jar.sha1
+			case http.StatusNotFound: // Store "N/A" to skip this item in the future
+			default:
+				s.logger.Warn("Unexpected status code", slog.String("url", url), slog.Int("status", resp.StatusCode))
+				s.errCount++
+				return nil // Temporary error, skip storing this item to try again next time
+			}
+
+			// Read the SHA1 content
+			data, err := io.ReadAll(resp.Body)
+			if err != nil {
+				s.logger.Warn("Failed to read SHA1 content", slog.String("url", url), slog.Any("error", err))
+				s.errCount++
+				return nil // Skip this item on error
+			}
+
+			// Process the SHA1 content
+			digest := sha1.Parse(data)
+			if digest != index.NotAvailable {
+				fetchedCount.Add(1)
+			}
+
+			// Send the record to the output channel
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			case recordCh <- types.Record{
+				GroupID:    rec.GroupID,
+				ArtifactID: rec.ArtifactID,
+				Version:    rec.Version,
+				Classifier: rec.Classifier,
+				SHA1:       digest,
+			}:
+			}
+			return nil
 		})
 	}
-	return g.Wait()
-}
 
-// fetchSHA1 fetches SHA1 for a single record from Maven Central
-func (s *Source) fetchSHA1(rec types.Record) (string, error) {
-	groupPath := strings.ReplaceAll(rec.GroupID, ".", "/")
-	jarName := rec.ArtifactID + "-" + rec.Version + ".jar"
-	url := fmt.Sprintf("%s/%s/%s/%s/%s.sha1",
-		mavenCentralURL,
-		groupPath,
-		rec.ArtifactID,
-		rec.Version,
-		jarName)
-
-	req, err := retryablehttp.NewRequest("GET", url, nil)
-	if err != nil {
-		return "", xerrors.Errorf("failed to create request: %w", err)
+	// Wait for all goroutines to complete
+	if err := g.Wait(); err != nil {
+		return xerrors.Errorf("error fetching SHA1s: %w", err)
 	}
 
-	resp, err := s.httpClient.Do(req)
-	if err != nil {
-		return "", xerrors.Errorf("failed to fetch SHA1: %w", err)
-	}
-	defer resp.Body.Close()
+	s.logger.Info("Completed fetching SHA1s from Maven Central",
+		slog.Int64("fetched", fetchedCount.Load()),
+		slog.Int64("total_attempted", int64(len(s.records))),
+		slog.Int("errors", s.errCount))
 
-	switch resp.StatusCode {
-	case http.StatusOK:
-	case http.StatusForbidden, http.StatusNotFound:
-		return index.NotAvailable, nil
-	default:
-		s.logger.Warn("Unexpected status code", slog.String("url", url), slog.Int("status", resp.StatusCode))
-		return "", nil
-	}
+	s.processed = int(fetchedCount.Load())
 
-	data, err := io.ReadAll(resp.Body)
-	if err != nil {
-		s.logger.Warn("Failed to read SHA1 content", slog.String("url", url), slog.Any("error", err))
-		return "", nil
-	}
-
-	return sha1.Parse(data), nil
+	return nil
 }
 
 func (s *Source) Processed() int {
