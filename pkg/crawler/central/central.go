@@ -279,7 +279,11 @@ func (s *Source) fetchSHA1s(ctx context.Context, recordCh chan<- types.Record) e
 			groupPath := strings.ReplaceAll(rec.GroupID, ".", "/")
 
 			// Build jar name: artifactId-version[-classifier].jar
-			jarName := rec.ArtifactID + "-" + rec.Version + ".jar"
+			jarName := rec.ArtifactID + "-" + rec.Version
+			if rec.Classifier != "" {
+				jarName += "-" + rec.Classifier
+			}
+			jarName += ".jar"
 
 			// Build the complete URL
 			url := fmt.Sprintf("%s/%s/%s/%s/%s.sha1",
