@@ -193,7 +193,7 @@ func (s *Source) Read(ctx context.Context, recordCh chan<- types.Record) error {
 	return nil
 }
 
-func (s *Source) read(ctx context.Context, records <-chan data.Record, errCh chan error, recordCh chan<- types.Record) error {
+func (s *Source) read(ctx context.Context, records <-chan data.Record, errCh chan error) error {
 	var record data.Record
 	var ok bool
 	var count int
