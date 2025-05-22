@@ -179,7 +179,7 @@ func (s *Source) Read(ctx context.Context, recordCh chan<- types.Record) error {
 	}()
 
 	// Collect GAVC records from central index
-	if err := s.read(ctx, records, errCh, recordCh); err != nil {
+	if err := s.read(ctx, records, errCh); err != nil {
 		return xerrors.Errorf("failed to read central index: %w", err)
 	}
 
