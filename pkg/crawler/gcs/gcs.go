@@ -59,7 +59,7 @@ func (s *Source) Read(ctx context.Context, recordCh chan<- types.Record) error {
 	// Create error group for coordinating the pipeline
 	g, ctx := errgroup.WithContext(ctx)
 
-	// Stage 1 (Lister): Get all iten names suffixing with .jar.sha1 from GCS
+	// Stage 1 (Lister): Get all item names suffixing with .jar.sha1 from GCS
 	g.Go(func() error {
 		defer close(itemCh)
 		return s.lister.Run(ctx, itemCh)
