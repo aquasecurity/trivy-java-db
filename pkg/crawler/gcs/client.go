@@ -1,7 +1,7 @@
-package crawler
+package gcs
 
 import (
-	"bytes"
+	"cmp"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -11,38 +11,49 @@ import (
 	"net/http"
 	"strings"
 
-	"github.com/aquasecurity/trivy-java-db/pkg/index"
+	"github.com/aquasecurity/trivy-java-db/pkg/crawler/sha1"
 	"github.com/hashicorp/go-retryablehttp"
 	"github.com/samber/lo"
 	"golang.org/x/xerrors"
 )
 
 const (
+	gcsURL             = "https://storage.googleapis.com/"
 	mavenCentralBucket = "maven-central"
 	mavenPrefix        = "maven2/"
 )
 
 // GCSRequestParams represents parameters for GCS API requests
-type GCSRequestParams struct {
+type RequestParams struct {
 	Prefix     string // Object prefix to filter results
 	Delimiter  string // Delimiter for directory-like hierarchy
 	MatchGlob  string // Glob pattern to match objects
 	MaxResults int    // Maximum results per page
 }
 
-// GCS is a client for GCS operations
-type GCS struct {
+type ListResponse struct {
+	NextPageToken string   `json:"nextPageToken,omitempty"`
+	Items         []Item   `json:"items,omitempty"`
+	Prefixes      []string `json:"prefixes,omitempty"`
+}
+
+type Item struct {
+	Name string `json:"name"`
+}
+
+// Client is a client for GCS API
+type Client struct {
 	client     *retryablehttp.Client
 	baseURL    string
 	logger     *slog.Logger
 	bucketName string // Default bucket name, can be overridden in requests
 }
 
-// NewGCS creates a new GCS client
-func NewGCS(client *retryablehttp.Client, baseURL string) *GCS {
-	return &GCS{
+// NewClient creates a new GCS client
+func NewClient(client *retryablehttp.Client, baseURL string) *Client {
+	return &Client{
 		client:     client,
-		baseURL:    baseURL,
+		baseURL:    cmp.Or(baseURL, gcsURL),
 		logger:     slog.With(slog.String("component", "storage")),
 		bucketName: mavenCentralBucket, // Default to Maven Central
 	}
@@ -51,9 +62,9 @@ func NewGCS(client *retryablehttp.Client, baseURL string) *GCS {
 // Maven-specific methods
 
 // JARSHA1Files returns an iterator over JAR SHA1 files, filtering out certain types
-func (s *GCS) JARSHA1Files(ctx context.Context, prefix string) iter.Seq2[string, error] {
+func (s *Client) JARSHA1Files(ctx context.Context, prefix string) iter.Seq2[string, error] {
 	return func(yield func(string, error) bool) {
-		items := s.listItems(ctx, GCSRequestParams{
+		items := s.listItems(ctx, RequestParams{
 			Prefix:     prefix,
 			MatchGlob:  "**/*.jar.sha1",
 			MaxResults: 5000, // 5,000 is the maximum allowed by GCS API
@@ -78,8 +89,8 @@ func (s *GCS) JARSHA1Files(ctx context.Context, prefix string) iter.Seq2[string,
 }
 
 // TopLevelPrefixes returns an iterator over the top-level directory prefixes in Maven Central
-func (s *GCS) TopLevelPrefixes(ctx context.Context) iter.Seq2[string, error] {
-	return s.listPrefixes(ctx, GCSRequestParams{
+func (s *Client) TopLevelPrefixes(ctx context.Context) iter.Seq2[string, error] {
+	return s.listPrefixes(ctx, RequestParams{
 		Prefix:     mavenPrefix,
 		Delimiter:  "/",
 		MaxResults: 5000, // 5,000 is the maximum allowed by GCS API
@@ -87,42 +98,18 @@ func (s *GCS) TopLevelPrefixes(ctx context.Context) iter.Seq2[string, error] {
 }
 
 // FetchSHA1 fetches the SHA1 hash for a given item name
-func (s *GCS) FetchSHA1(ctx context.Context, itemName string) (string, error) {
+func (s *Client) FetchSHA1(ctx context.Context, itemName string) (string, error) {
 	data, err := s.getObject(ctx, itemName)
 	if err != nil {
 		return "", xerrors.Errorf("failed to get object %s: %w", itemName, err)
 	}
-	data = bytes.TrimSpace(data)
-
-	// Handle empty SHA1 files
-	// e.g.
-	//    https://repo.maven.apache.org/maven2/org/wso2/msf4j/msf4j-swagger/2.5.2/msf4j-swagger-2.5.2.jar.sha1
-	//    https://repo.maven.apache.org/maven2/org/wso2/carbon/analytics/org.wso2.carbon.permissions.rest.api/2.0.248/org.wso2.carbon.permissions.rest.api-2.0.248.jar.sha1
-	if len(data) == 0 {
-		return index.NotAvailable, nil
-	}
-
-	// Find a valid SHA1 hash in the content
-	parts := strings.Fields(string(data))
-
-	// Validate SHA1 as there are xxx.jar.sha1 files with additional data.
-	// e.g.
-	//   https://repo.maven.apache.org/maven2/aspectj/aspectjrt/1.5.2a/aspectjrt-1.5.2a.jar.sha1
-	//   https://repo.maven.apache.org/maven2/xerces/xercesImpl/2.9.0/xercesImpl-2.9.0.jar.sha1
-	for _, part := range parts {
-		if len(part) == 40 && isHexString(part) {
-			return part, nil
-		}
-	}
-
-	// Record wrong SHA1 digests so we can skip them in the future
-	return index.NotAvailable, nil
+	return sha1.Parse(data), nil
 }
 
 // Internal methods
 
 // getObject fetches a single object
-func (s *GCS) getObject(ctx context.Context, objectPath string) ([]byte, error) {
+func (s *Client) getObject(ctx context.Context, objectPath string) ([]byte, error) {
 	url := s.baseURL + s.bucketName + "/" + objectPath
 	resp, err := s.httpGet(ctx, url)
 	if err != nil {
@@ -146,8 +133,8 @@ func (s *GCS) getObject(ctx context.Context, objectPath string) ([]byte, error) 
 }
 
 // listItems is a function to list items with given parameters
-func (s *GCS) listItems(ctx context.Context, params GCSRequestParams) iter.Seq2[string, error] {
-	return s.listObjects(ctx, params, func(result GCSListResponse) []string {
+func (s *Client) listItems(ctx context.Context, params RequestParams) iter.Seq2[string, error] {
+	return s.listObjects(ctx, params, func(result ListResponse) []string {
 		return lo.Map(result.Items, func(item Item, _ int) string {
 			return item.Name
 		})
@@ -155,14 +142,14 @@ func (s *GCS) listItems(ctx context.Context, params GCSRequestParams) iter.Seq2[
 }
 
 // listPrefixes is a function to list prefixes with given parameters
-func (s *GCS) listPrefixes(ctx context.Context, params GCSRequestParams) iter.Seq2[string, error] {
-	return s.listObjects(ctx, params, func(result GCSListResponse) []string {
+func (s *Client) listPrefixes(ctx context.Context, params RequestParams) iter.Seq2[string, error] {
+	return s.listObjects(ctx, params, func(result ListResponse) []string {
 		return result.Prefixes
 	})
 }
 
 // prepareListRequest prepares the HTTP request for GCS API calls
-func (s *GCS) prepareListRequest(ctx context.Context, params GCSRequestParams) (string, *retryablehttp.Request, error) {
+func (s *Client) prepareListRequest(ctx context.Context, params RequestParams) (string, *retryablehttp.Request, error) {
 	url := s.baseURL + "storage/v1/b/" + s.bucketName + "/o/"
 	req, err := retryablehttp.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
@@ -194,23 +181,23 @@ func (s *GCS) prepareListRequest(ctx context.Context, params GCSRequestParams) (
 }
 
 // list makes the HTTP call to GCS API and returns the parsed response
-func (s *GCS) list(ctx context.Context, req *retryablehttp.Request) (GCSListResponse, error) {
+func (s *Client) list(ctx context.Context, req *retryablehttp.Request) (ListResponse, error) {
 	resp, err := s.httpGet(ctx, req.URL.String())
 	if err != nil {
-		return GCSListResponse{}, xerrors.Errorf("http error: %w", err)
+		return ListResponse{}, xerrors.Errorf("http error: %w", err)
 	}
 	defer resp.Body.Close()
 
-	var result GCSListResponse
+	var result ListResponse
 	if err = json.NewDecoder(resp.Body).Decode(&result); err != nil {
-		return GCSListResponse{}, xerrors.Errorf("unable to parse API response: %w", err)
+		return ListResponse{}, xerrors.Errorf("unable to parse API response: %w", err)
 	}
 
 	return result, nil
 }
 
 // httpGet performs an HTTP GET request with retry handling
-func (s *GCS) httpGet(ctx context.Context, url string) (*http.Response, error) {
+func (s *Client) httpGet(ctx context.Context, url string) (*http.Response, error) {
 	req, err := retryablehttp.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
 		return nil, xerrors.Errorf("unable to create a HTTP request: %w", err)
@@ -224,7 +211,7 @@ func (s *GCS) httpGet(ctx context.Context, url string) (*http.Response, error) {
 
 // listObjects is a generic function to list objects or prefixes from GCS
 // T is the type of elements to return (Item or string)
-func (s *GCS) listObjects(ctx context.Context, params GCSRequestParams, extractor func(GCSListResponse) []string) iter.Seq2[string, error] {
+func (s *Client) listObjects(ctx context.Context, params RequestParams, extractor func(ListResponse) []string) iter.Seq2[string, error] {
 	return func(yield func(string, error) bool) {
 		// Prepare API URL and request
 		_, req, err := s.prepareListRequest(ctx, params)
@@ -271,14 +258,4 @@ func (s *GCS) listObjects(ctx context.Context, params GCSRequestParams, extracto
 			pageToken = result.NextPageToken
 		}
 	}
-}
-
-// isHexString checks if a string contains only hex characters
-func isHexString(s string) bool {
-	for _, c := range s {
-		if !((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F')) {
-			return false
-		}
-	}
-	return true
 }
