@@ -1,7 +1,6 @@
 package fileutil
 
 import (
-	"encoding/json"
 	"io"
 	"io/fs"
 	"log/slog"
@@ -58,24 +57,3 @@ func Count(root string) (int, error) {
 	return count, nil
 }
 
-func WriteJSON(filePath string, index interface{}) error {
-	if err := os.MkdirAll(filepath.Dir(filePath), os.ModePerm); err != nil {
-		return xerrors.Errorf("unable to create a directory: %w", err)
-	}
-
-	f, err := os.Create(filePath)
-	if err != nil {
-		return xerrors.Errorf("unable to open %s: %w", filePath, err)
-	}
-	defer f.Close()
-
-	b, err := json.MarshalIndent(index, "", "  ")
-	if err != nil {
-		return xerrors.Errorf("failed to marshal JSON: %w", err)
-	}
-
-	if _, err = f.Write(b); err != nil {
-		return xerrors.Errorf("failed to save a file: %w", err)
-	}
-	return nil
-}

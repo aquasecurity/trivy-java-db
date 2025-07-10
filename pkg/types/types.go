@@ -14,11 +14,7 @@ type Index struct {
 	GroupID     string
 	ArtifactID  string
 	Version     string
+	Classifier  string // TODO: This is not used yet, but we keep it for future use
 	SHA1        []byte
 	ArchiveType ArchiveType
-}
-
-type Version struct {
-	Version string
-	SHA1    []byte
 }

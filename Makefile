@@ -1,5 +1,6 @@
 LDFLAGS=-ldflags "-s -w"
 GO_SRCS := $(shell find . -name *.go)
+MAVEN_INDEX_DIR ?= $(HOME)/.cache/maven-index
 
 .PHONY: test
 test:
@@ -11,13 +12,9 @@ build: trivy-java-db
 trivy-java-db: $(GO_SRCS)
 	go build $(LDFLAGS) ./cmd/trivy-java-db
 
-.PHONY: db-crawl
-db-crawl: trivy-java-db
-	./trivy-java-db --cache-dir ./cache crawl
-
 .PHONY: db-build
 db-build: trivy-java-db
-	./trivy-java-db --cache-dir ./cache build
+	./trivy-java-db --cache-dir ./cache --index-dir $(MAVEN_INDEX_DIR) build
 
 .PHONY: db-compress
 db-compress: cache/*
