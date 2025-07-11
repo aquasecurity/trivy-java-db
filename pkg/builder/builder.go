@@ -2,6 +2,7 @@ package builder
 
 import (
 	"encoding/hex"
+	"errors"
 	"io"
 	"log/slog"
 	"path/filepath"
@@ -10,11 +11,12 @@ import (
 	"golang.org/x/xerrors"
 	"k8s.io/utils/clock"
 
+	"github.com/cheggaaa/pb/v3"
+
 	"github.com/aquasecurity/trivy-java-db/pkg/db"
 	"github.com/aquasecurity/trivy-java-db/pkg/fileutil"
 	"github.com/aquasecurity/trivy-java-db/pkg/index"
 	"github.com/aquasecurity/trivy-java-db/pkg/types"
-	"github.com/cheggaaa/pb/v3"
 )
 
 const updateInterval = time.Hour * 24 * 3 // 3 days
@@ -59,7 +61,7 @@ func (b *Builder) Build(indexDir string) error {
 		for {
 			// Read one record
 			record, err := reader.Read()
-			if err == io.EOF {
+			if errors.Is(err, io.EOF) {
 				break
 			} else if err != nil {
 				// Log but continue on error
