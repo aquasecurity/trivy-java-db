@@ -13,6 +13,11 @@ type Reader struct {
 	csv.Reader
 }
 
+// Open opens a TSV file for reading Maven artifact index data.
+// This function is used by external repositories to read the compiled Java artifact database.
+//
+// The file format is expected to be tab-separated values with 5 fields:
+// GroupID, ArtifactID, Version, Classifier, SHA1
 func Open(path string) (*Reader, error) {
 	f, err := os.Open(path)
 	if err != nil {
