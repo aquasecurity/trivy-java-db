@@ -6,8 +6,6 @@ const (
 	// types of files
 	JarType = "jar"
 	AarType = "aar"
-
-	IndexesDir = "indexes"
 )
 
 type Index struct {
