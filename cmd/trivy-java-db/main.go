@@ -58,23 +58,15 @@ func init() {
 
 func build() error {
 	dbDir := db.Dir(cacheDir)
-	slog.Info("Database", slog.String("path", dbDir))
-
-	exist := db.Exists(dbDir)
-	if exist {
-		slog.Info("Updating the existing database")
-	} else {
-		slog.Info("Creating a new database")
-	}
+	slog.Info("Creating a new database", slog.String("path", dbDir))
 
 	dbc, err := db.New(dbDir)
 	if err != nil {
 		return xerrors.Errorf("db create error: %w", err)
 	}
-	if !exist {
-		if err = dbc.Init(); err != nil {
-			return xerrors.Errorf("db init error: %w", err)
-		}
+	
+	if err = dbc.Init(); err != nil {
+		return xerrors.Errorf("db init error: %w", err)
 	}
 
 	centralIndexDir := filepath.Join(indexDir, "central")

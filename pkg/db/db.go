@@ -27,12 +27,6 @@ func Dir(cacheDir string) string {
 	return filepath.Join(cacheDir, "db")
 }
 
-func Exists(cacheDir string) bool {
-	if _, err := os.Stat(path(cacheDir)); os.IsNotExist(err) {
-		return false
-	}
-	return true
-}
 
 func path(cacheDir string) string {
 	return filepath.Join(cacheDir, dbFileName)
