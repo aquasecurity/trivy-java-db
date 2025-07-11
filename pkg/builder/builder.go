@@ -36,7 +36,7 @@ func NewBuilder(db db.DB, meta db.Client) Builder {
 }
 
 func (b *Builder) Build(indexDir string) error {
-	slog.Info("Building the index database")
+	slog.Info("Building the index database", slog.String("index_dir", indexDir))
 	count, err := fileutil.Count(indexDir)
 	if err != nil {
 		return xerrors.Errorf("count error: %w", err)
