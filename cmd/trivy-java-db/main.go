@@ -58,6 +58,12 @@ func init() {
 
 func build() error {
 	dbDir := db.Dir(cacheDir)
+	
+	// Check if database already exists
+	if db.Exists(dbDir) {
+		return xerrors.New("database already exists. Please run 'make clean' to remove the existing database before building a new one")
+	}
+	
 	slog.Info("Creating a new database", slog.String("path", dbDir))
 
 	dbc, err := db.New(dbDir)

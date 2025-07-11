@@ -32,6 +32,11 @@ func path(cacheDir string) string {
 	return filepath.Join(cacheDir, dbFileName)
 }
 
+func Exists(cacheDir string) bool {
+	_, err := os.Stat(path(cacheDir))
+	return err == nil
+}
+
 func New(cacheDir string) (DB, error) {
 	dbPath := path(cacheDir)
 	dbDir := filepath.Dir(dbPath)
