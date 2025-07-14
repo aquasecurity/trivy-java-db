@@ -35,7 +35,7 @@ jobs:
       - name: Clone maven-index repository
         uses: actions/checkout@v4
         with:
-          # Always use aquasecurity/maven-index as it's a private repository # and cannot be forked.
+          # Always use aquasecurity/maven-index as it's a private repository and cannot be forked.
           # Using ${github.repository_owner} would fail in forks as it doesn't exist there.
           repository: aquasecurity/maven-index
           path: maven-index
