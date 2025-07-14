@@ -1,19 +1,21 @@
 package builder
 
 import (
-	"encoding/json"
+	"encoding/hex"
+	"errors"
 	"io"
 	"log/slog"
 	"path/filepath"
 	"time"
 
-	"github.com/cheggaaa/pb/v3"
 	"golang.org/x/xerrors"
 	"k8s.io/utils/clock"
 
-	"github.com/aquasecurity/trivy-java-db/pkg/crawler"
+	"github.com/cheggaaa/pb/v3"
+
 	"github.com/aquasecurity/trivy-java-db/pkg/db"
 	"github.com/aquasecurity/trivy-java-db/pkg/fileutil"
+	"github.com/aquasecurity/trivy-java-db/pkg/index"
 	"github.com/aquasecurity/trivy-java-db/pkg/types"
 )
 
@@ -33,47 +35,87 @@ func NewBuilder(db db.DB, meta db.Client) Builder {
 	}
 }
 
-func (b *Builder) Build(cacheDir string) error {
-	indexDir := filepath.Join(cacheDir, "indexes")
+func (b *Builder) Build(indexDir string) error {
+	slog.Info("Building the index database", slog.String("index_dir", indexDir))
 	count, err := fileutil.Count(indexDir)
 	if err != nil {
 		return xerrors.Errorf("count error: %w", err)
 	}
 	bar := pb.StartNew(count)
-	defer slog.Info("Build completed")
+	defer slog.Info("Build completed", slog.Int("count", count))
 	defer bar.Finish()
 
-	var indexes []types.Index
-	if err := fileutil.Walk(indexDir, func(r io.Reader, path string) error {
-		index := &crawler.Index{}
-		if err := json.NewDecoder(r).Decode(index); err != nil {
-			return xerrors.Errorf("failed to decode index: %w", err)
+	err = fileutil.Walk(indexDir, func(r io.Reader, path string) error {
+		// Process only TSV files
+		if filepath.Ext(path) != ".tsv" {
+			return nil
 		}
-		for _, ver := range index.Versions {
-			indexes = append(indexes, types.Index{
-				GroupID:     index.GroupID,
-				ArtifactID:  index.ArtifactID,
-				Version:     ver.Version,
-				SHA1:        ver.SHA1,
-				ArchiveType: index.ArchiveType,
-			})
-		}
-		bar.Increment()
+		defer bar.Increment()
 
-		if len(indexes) > 1000 {
-			if err = b.db.InsertIndexes(indexes); err != nil {
-				return xerrors.Errorf("failed to insert index to db: %w", err)
+		// Create a CSV reader for TSV format
+		reader := index.NewReader(r)
+
+		var indexes, classifierIndexes []types.Index
+
+		// Process all records in this file
+		for {
+			// Read one record
+			record, err := reader.Read()
+			if errors.Is(err, io.EOF) {
+				break
+			} else if err != nil {
+				// Log but continue on error
+				slog.Warn("Error reading TSV record", slog.String("file", path), slog.Any("error", err))
+				continue
 			}
-			indexes = []types.Index{}
+
+			// Need at least GroupID, ArtifactID, Version
+			if len(record) != 5 {
+				continue // Skip invalid records
+			}
+
+			groupID, artifactID, version, classifier, sha1str := record[0], record[1], record[2], record[3], record[4]
+			if sha1str == index.NotAvailable {
+				continue // Skip records with no SHA1
+			}
+
+			sha1, err := hex.DecodeString(sha1str)
+			if err != nil {
+				slog.Error("Failed to decode SHA1", slog.Any("error", err), slog.String("groupID", groupID), slog.String("artifactId", artifactID),
+					slog.String("version", version), slog.String("classifier", classifier), slog.String("sha1", sha1str))
+				return xerrors.Errorf("failed to decode SHA1: %w", err) // Should never happen as we validate SHA1 in crawler
+			}
+
+			index := types.Index{
+				GroupID:     groupID,
+				ArtifactID:  artifactID,
+				Version:     version,
+				Classifier:  classifier,
+				SHA1:        sha1,
+				ArchiveType: types.JarType, // Always JAR for now
+			}
+
+			if index.Classifier == "" {
+				// Empty classifier
+				// e.g.  https://repo.maven.apache.org/maven2/ai/rapids/cudf/0.14/cudf-0.14.jar.sha1
+				indexes = append(indexes, index)
+			} else {
+				// Non-empty classifier
+				// e.g. https://repo.maven.apache.org/maven2/ai/rapids/cudf/0.14/cudf-0.14-cuda10-1.jar.sha1 (cuda10-1 is classifier)
+				classifierIndexes = append(classifierIndexes, index)
+			}
+		}
+
+		// Insert indexes without classifier first, and then with classifier so they will not override the indexes with classifier.
+		// The classifier indexes might be rejected by the unique constraint on sha1.
+		indexes = append(indexes, classifierIndexes...)
+		if err := b.db.InsertIndexes(indexes); err != nil {
+			return xerrors.Errorf("failed to insert index to db: %w", err)
 		}
 		return nil
-	}); err != nil {
+	})
+	if err != nil {
 		return xerrors.Errorf("walk error: %w", err)
-	}
-
-	// Insert the remaining indexes
-	if err = b.db.InsertIndexes(indexes); err != nil {
-		return xerrors.Errorf("failed to insert index to db: %w", err)
 	}
 
 	if err := b.db.VacuumDB(); err != nil {

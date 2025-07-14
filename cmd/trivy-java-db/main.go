@@ -1,7 +1,6 @@
 package main
 
 import (
-	"context"
 	"fmt"
 	"log/slog"
 	"os"
@@ -11,7 +10,6 @@ import (
 	"golang.org/x/xerrors"
 
 	"github.com/aquasecurity/trivy-java-db/pkg/builder"
-	"github.com/aquasecurity/trivy-java-db/pkg/crawler"
 	"github.com/aquasecurity/trivy-java-db/pkg/db"
 
 	_ "modernc.org/sqlite"
@@ -27,18 +25,11 @@ func main() {
 var (
 	// Used for flags.
 	cacheDir string
-	limit    int
+	indexDir string
 
 	rootCmd = &cobra.Command{
 		Use:   "trivy-java-db",
 		Short: "Build Java DB to store maven indexes",
-	}
-	crawlCmd = &cobra.Command{
-		Use:   "crawl",
-		Short: "Crawl maven indexes and save them into files",
-		RunE: func(cmd *cobra.Command, args []string) error {
-			return crawl(cmd.Context())
-		},
 	}
 	buildCmd = &cobra.Command{
 		Use:   "build",
@@ -57,44 +48,37 @@ func init() {
 
 	rootCmd.PersistentFlags().StringVar(&cacheDir, "cache-dir", filepath.Join(userCacheDir, "trivy-java-db"),
 		"cache dir")
-	rootCmd.PersistentFlags().IntVar(&limit, "limit", 300, "max parallelism")
+	rootCmd.PersistentFlags().StringVar(&indexDir, "index-dir", filepath.Join(userCacheDir, "maven-index"),
+		"index repo dir")
 
-	rootCmd.AddCommand(crawlCmd)
 	rootCmd.AddCommand(buildCmd)
 
 	slog.SetLogLoggerLevel(slog.LevelInfo) // TODO: add --debug
 }
 
-func crawl(ctx context.Context) error {
-	c, err := crawler.NewCrawler(crawler.Option{
-		Limit:    int64(limit),
-		CacheDir: cacheDir,
-	})
-	if err != nil {
-		return xerrors.Errorf("unable to create new Crawler: %w", err)
-	}
-	if err := c.Crawl(ctx); err != nil {
-		return xerrors.Errorf("crawl error: %w", err)
-	}
-	return nil
-}
-
 func build() error {
 	dbDir := db.Dir(cacheDir)
-	slog.Info("Database", slog.String("path", dbDir))
+	
+	// Check if database already exists
+	if db.Exists(dbDir) {
+		return xerrors.New("database already exists. Please run 'make clean' to remove the existing database before building a new one")
+	}
+	
+	slog.Info("Creating a new database", slog.String("path", dbDir))
+
 	dbc, err := db.New(dbDir)
 	if err != nil {
 		return xerrors.Errorf("db create error: %w", err)
 	}
-	if !db.Exists(dbDir) {
-		if err = dbc.Init(); err != nil {
-			return xerrors.Errorf("db init error: %w", err)
-		}
+	
+	if err = dbc.Init(); err != nil {
+		return xerrors.Errorf("db init error: %w", err)
 	}
 
+	centralIndexDir := filepath.Join(indexDir, "central")
 	meta := db.NewMetadata(dbDir)
 	b := builder.NewBuilder(dbc, meta)
-	if err = b.Build(cacheDir); err != nil {
+	if err = b.Build(centralIndexDir); err != nil {
 		return xerrors.Errorf("db build error: %w", err)
 	}
 	return nil
