@@ -58,27 +58,26 @@ func init() {
 
 func build() error {
 	dbDir := db.Dir(cacheDir)
-	
+
 	// Check if database already exists
 	if db.Exists(dbDir) {
 		return xerrors.New("database already exists. Please run 'make clean' to remove the existing database before building a new one")
 	}
-	
+
 	slog.Info("Creating a new database", slog.String("path", dbDir))
 
 	dbc, err := db.New(dbDir)
 	if err != nil {
 		return xerrors.Errorf("db create error: %w", err)
 	}
-	
+
 	if err = dbc.Init(); err != nil {
 		return xerrors.Errorf("db init error: %w", err)
 	}
 
-	centralIndexDir := filepath.Join(indexDir, "central")
 	meta := db.NewMetadata(dbDir)
 	b := builder.NewBuilder(dbc, meta)
-	if err = b.Build(centralIndexDir); err != nil {
+	if err = b.Build(indexDir); err != nil {
 		return xerrors.Errorf("db build error: %w", err)
 	}
 	return nil
