@@ -24,8 +24,9 @@ func main() {
 
 var (
 	// Used for flags.
-	cacheDir string
-	indexDir string
+	cacheDir    string
+	indexDir    string
+	dataSources []string
 
 	rootCmd = &cobra.Command{
 		Use:   "trivy-java-db",
@@ -50,6 +51,8 @@ func init() {
 		"cache dir")
 	rootCmd.PersistentFlags().StringVar(&indexDir, "index-dir", filepath.Join(userCacheDir, "maven-index"),
 		"index repo dir")
+	rootCmd.PersistentFlags().StringSliceVar(&dataSources, "data-source", []string{"central"},
+		"list of sources used to build the database")
 
 	rootCmd.AddCommand(buildCmd)
 
@@ -57,29 +60,36 @@ func init() {
 }
 
 func build() error {
+	if len(dataSources) == 0 {
+		return xerrors.New("must specify at least one of --data-source")
+	}
+
 	dbDir := db.Dir(cacheDir)
-	
+
 	// Check if database already exists
 	if db.Exists(dbDir) {
 		return xerrors.New("database already exists. Please run 'make clean' to remove the existing database before building a new one")
 	}
-	
+
 	slog.Info("Creating a new database", slog.String("path", dbDir))
 
 	dbc, err := db.New(dbDir)
 	if err != nil {
 		return xerrors.Errorf("db create error: %w", err)
 	}
-	
+
 	if err = dbc.Init(); err != nil {
 		return xerrors.Errorf("db init error: %w", err)
 	}
 
-	centralIndexDir := filepath.Join(indexDir, "central")
 	meta := db.NewMetadata(dbDir)
 	b := builder.NewBuilder(dbc, meta)
-	if err = b.Build(centralIndexDir); err != nil {
-		return xerrors.Errorf("db build error: %w", err)
+
+	for _, source := range dataSources {
+		sourceDir := filepath.Join(indexDir, source)
+		if err = b.Build(sourceDir); err != nil {
+			return xerrors.Errorf("db build error: %w", err)
+		}
 	}
 	return nil
 }

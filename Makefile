@@ -1,6 +1,7 @@
 LDFLAGS=-ldflags "-s -w"
 GO_SRCS := $(shell find . -name *.go)
 CACHE_DIR ?= ./cache
+DATA_SOURCE ?= central
 
 .PHONY: test
 test:
@@ -15,9 +16,9 @@ trivy-java-db: $(GO_SRCS)
 .PHONY: db-build
 db-build: trivy-java-db
 ifdef MAVEN_INDEX_DIR
-	./trivy-java-db --cache-dir $(CACHE_DIR) --index-dir $(MAVEN_INDEX_DIR) build
+	./trivy-java-db --cache-dir $(CACHE_DIR) --data-source $(DATA_SOURCE) --index-dir $(MAVEN_INDEX_DIR) build
 else
-	./trivy-java-db --cache-dir $(CACHE_DIR) build
+	./trivy-java-db --cache-dir $(CACHE_DIR) --data-source $(DATA_SOURCE) build
 endif
 
 .PHONY: db-compress
