@@ -39,7 +39,7 @@ jobs:
           # Using ${github.repository_owner} would fail in forks as it doesn't exist there.
           repository: aquasecurity/maven-index
           path: maven-index
-          token: ${{ secrets.ORG_REPO_TOKEN }}
+          token: ${{ secrets.MAVEN_INDEX_READ_TOKEN }}
 
       - name: Build database
         run: make db-build MAVEN_INDEX_DIR=maven-index
