@@ -17,6 +17,8 @@ jobs:
     steps:
       - name: Check out code into the Go module directory
         uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8 # v6.0.1
+        with:
+          persist-credentials: false
 
       - name: Set up Go
         uses: actions/setup-go@4dc6199c7b1a012772edbd06daecab0f50c9053c # v6.1.0
@@ -39,6 +41,7 @@ jobs:
           repository: aquasecurity/maven-index
           path: maven-index
           token: ${{ secrets.MAVEN_INDEX_READ_TOKEN }}
+          persist-credentials: false
 
       - name: Build database
         run: make db-build MAVEN_INDEX_DIR=maven-index
